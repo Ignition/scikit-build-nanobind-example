@@ -80,6 +80,44 @@ cmake -S . -B build-standalone -G Ninja -DAHOCORASICK_BUILD_TESTS=OFF
 cmake --build build-standalone            # -> libaho_corasick.a
 ```
 
+### Using it from another project
+
+It installs, and exports a CMake package, so reuse does not mean vendoring this
+repository:
+
+```bash
+cmake --install build-standalone --prefix /some/prefix
+```
+
+```cmake
+find_package(ahocorasick 0.1 REQUIRED)
+target_link_libraries(your_target PRIVATE ahocorasick::core)
+```
+
+```cpp
+import aho_corasick;   // and nothing else from this project
+```
+
+Two things about installing a C++20 module are worth knowing before copying this
+part. **The interface unit ships as source, not as a BMI** — a BMI is tied to one
+compiler, one version and one set of flags, so a package containing one would
+work only on the machine that built it. The consumer compiles the interface, so
+it needs a module-capable toolchain too; there is no way to hand a module to an
+older compiler.
+
+That has a second consequence, and it is the one that quietly breaks builds:
+because the consumer compiles the interface unit, the interface unit's `#include
+<ahocorasick_export.h>` has to resolve *in the consumer's build*. So the
+generated export header is installed and the include directory is `PUBLIC`, even
+though no consumer ever writes that include. The same applies to
+`AHOCORASICK_STATIC_DEFINE`, which is why it is a `PUBLIC` compile definition
+rather than a private one — inert on ELF, but a `dllimport` against a static
+archive on MSVC if it is missing.
+
+`install(EXPORT ... CXX_MODULES_DIRECTORY ...)` is likewise not optional. Without
+it the exported target carries no module information and a consumer's `import`
+finds nothing to import.
+
 Static by default, and `BUILD_SHARED_LIBS=ON` gets you `libaho_corasick.so`
 instead. The wheel ignores the setting and always links statically: a shared core
 inside a wheel would have to be installed beside the extension module and found
@@ -220,6 +258,8 @@ The choices worth knowing about before you copy this:
 | Optimisation flags | Left to `CMAKE_BUILD_TYPE` | Hardcoded `-O3` is redundant in Release and breaks Debug |
 | Symbol visibility | Hidden project-wide, exported per member | Otherwise the algorithm's symbols leak out of the extension module |
 | Library type | `BUILD_SHARED_LIBS`, forced static for the wheel | A shared core in a wheel needs an `$ORIGIN` RPATH and buys nothing |
+| Reuse | Installed + exported CMake package | Reuse without vendoring; the seam's second consumer, tested in CI |
+| Installed module | Interface unit as source, never a BMI | A BMI is specific to one compiler, version and flag set |
 
 ## Quick start
 

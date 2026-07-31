@@ -155,6 +155,10 @@ target_compile_options(ahocorasick_warnings INTERFACE
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
+# Included here rather than beside the install rules below, because
+# CMAKE_INSTALL_INCLUDEDIR is referenced by the target's own usage requirements.
+include(GNUInstallDirs)
+
 # --- The algorithm, with no idea Python exists -------------------------------
 # A separate target on purpose. It never sees a nanobind header, so it can be
 # unit-tested with a C++ framework, linked into a non-Python program, or handed
@@ -187,8 +191,10 @@ target_sources(aho_corasick
                       BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
                       FILES src/aho_corasick.cppm)
 
-# No include directory for consumers: they reach this library by importing it,
-# not by finding a header.
+# Consumers reach this library by importing it, never by including a header.
+# There is one include directory below all the same, and it is not a consumer
+# header: it holds the generated export macro, which the interface unit itself
+# includes. See the comment there for why an installed consumer needs it anyway.
 target_compile_features(aho_corasick PUBLIC cxx_std_20)
 
 # `export` on a module declaration and `visibility("default")` on a symbol are
@@ -207,9 +213,17 @@ generate_export_header(aho_corasick
     BASE_NAME AHOCORASICK
     EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/generated/ahocorasick_export.h)
 
-# PRIVATE: only the module interface unit includes this. Consumers import.
+# PUBLIC, not PRIVATE, and the reason is worth spelling out because the obvious
+# reading is wrong. Consumers still never include this header themselves - they
+# reach the library by importing it. But an installed C++20 module ships its
+# interface unit as *source*, and the consumer compiles it, because a BMI is
+# specific to one compiler, version and flag set and cannot be distributed. That
+# compilation runs the .cppm's global module fragment, which includes this
+# header. So it has to be on the consumer's include path even though no consumer
+# ever writes the #include.
 target_include_directories(aho_corasick
-                           PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+                           PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
+                                  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # In a static library the macro must expand to nothing; the generated header
 # keys that off AHOCORASICK_STATIC_DEFINE. Reading the target's own TYPE rather
@@ -217,7 +231,11 @@ target_include_directories(aho_corasick
 # decided above.
 get_target_property(_ahocorasick_type aho_corasick TYPE)
 if(_ahocorasick_type STREQUAL "STATIC_LIBRARY")
-    target_compile_definitions(aho_corasick PRIVATE AHOCORASICK_STATIC_DEFINE)
+    # PUBLIC for the same reason the include directory above is: a consumer
+    # compiles the interface unit itself, so it needs the macro in the same state
+    # this build used. Getting it wrong is inert on ELF but produces a dllimport
+    # against a static archive on MSVC.
+    target_compile_definitions(aho_corasick PUBLIC AHOCORASICK_STATIC_DEFINE)
 else()
     # An unversioned .so is a packaging problem deferred, not avoided.
     set_target_properties(aho_corasick PROPERTIES
@@ -228,11 +246,24 @@ endif()
 set_target_properties(aho_corasick PROPERTIES
     # Required when static: this library is linked into a shared module. Implied
     # when shared, and harmless to state either way.
-    POSITION_INDEPENDENT_CODE ON)
+    POSITION_INDEPENDENT_CODE ON
+
+    # So an installed consumer spells the target exactly as an in-tree one does.
+    # ALIAS targets are not exported, so without this the package would offer
+    # ahocorasick::aho_corasick while this file uses ahocorasick::core, and the
+    # two would drift in every example and error message.
+    EXPORT_NAME core)
 
 # Warnings only — optimisation belongs to CMAKE_BUILD_TYPE. Hardcoding -O3 here
 # would be redundant in Release and would silently defeat a Debug build.
-target_link_libraries(aho_corasick PRIVATE ahocorasick_warnings)
+#
+# BUILD_LOCAL_INTERFACE, not a plain PRIVATE link. A static library records even
+# its PRIVATE link libraries in its interface, as $<LINK_ONLY:...>, so exporting
+# this target would demand that the warnings target be exported too — putting an
+# internal build detail into the installed package, where a consumer would see
+# ahocorasick::ahocorasick_warnings and rightly wonder what it was for.
+target_link_libraries(aho_corasick
+                      PRIVATE $<BUILD_LOCAL_INTERFACE:ahocorasick_warnings>)
 
 # --- Seam: a real third-party dependency -------------------------------------
 # The automaton is hand-rolled so the C++ stays readable. Swapping in a library
@@ -254,6 +285,63 @@ target_link_libraries(aho_corasick PRIVATE ahocorasick_warnings)
 target_link_options(aho_corasick PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:LINKER:--exclude-libs,ALL>)
 # -----------------------------------------------------------------------------
+
+# --- Installing the library --------------------------------------------------
+# Without this the library is reusable only by vendoring the repository and
+# calling add_subdirectory. Installing gives the seam above its second consumer:
+# a project that finds this one with find_package and imports the module.
+#
+# OFF under scikit-build-core, where the extension module is the only consumer
+# and a copy of the algorithm inside the wheel would be dead weight.
+if(DEFINED SKBUILD)
+    set(_ahocorasick_install_default OFF)
+else()
+    set(_ahocorasick_install_default ON)
+endif()
+option(AHOCORASICK_INSTALL
+       "Generate install rules for the C++ library" ${_ahocorasick_install_default})
+
+if(AHOCORASICK_INSTALL)
+    include(CMakePackageConfigHelpers)
+
+    # The module interface unit is installed as source. Deliberately no
+    # CXX_MODULES_BMI: a BMI is tied to one compiler, one version and one set of
+    # flags, so shipping one would produce a package that works only for the
+    # machine that built it. The consumer compiles the interface instead, which
+    # is why it needs the include directory and the static define above.
+    install(TARGETS aho_corasick
+            EXPORT ahocorasickTargets
+            FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/cxx/miu
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/generated/ahocorasick_export.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    # CXX_MODULES_DIRECTORY is not optional here. Without it the exported target
+    # carries no module information at all, and a consumer's `import
+    # aho_corasick;` fails to find anything to import.
+    install(EXPORT ahocorasickTargets
+            NAMESPACE ahocorasick::
+            CXX_MODULES_DIRECTORY cxx-modules
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ahocorasick)
+
+    # SameMajorVersion rather than exact: the SOVERSION set above already says
+    # that a major bump is the breaking one, so the package version check should
+    # agree with the ABI promise rather than contradict it.
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/ahocorasickConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion)
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ahocorasickConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/ahocorasickConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ahocorasick)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/ahocorasickConfig.cmake
+                  ${CMAKE_CURRENT_BINARY_DIR}/ahocorasickConfigVersion.cmake
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ahocorasick)
+endif()
 
 # --- The C++ tests -----------------------------------------------------------
 # Placed above the Python section on purpose. Both sections are optional, and the

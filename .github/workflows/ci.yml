@@ -118,6 +118,81 @@ jobs:
       - name: Test
         run: ctest --test-dir build-cpp --output-on-failure
 
+  installed-package:
+    # The second consumer of the algorithm/bindings seam, and the one that proves
+    # the library is reusable rather than merely separable: a project that has
+    # never seen this source tree finds it with find_package and imports the
+    # module. Both link modes, because the export macro only matters in one.
+    #
+    # An installed C++20 module ships as source, so this also checks that the
+    # generated export header and the static define reach a consumer that
+    # compiles the interface unit itself.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
+
+      - name: Build and install the library
+        run: |
+          cmake -S . -B build-inst -G Ninja \
+            -DAHOCORASICK_BUILD_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=${{ matrix.shared }} \
+            -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
+          cmake --build build-inst
+          cmake --install build-inst
+
+      - name: Write a consumer that only knows find_package
+        run: |
+          mkdir -p consumer
+          cat > consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.28)
+          project(consumer LANGUAGES CXX)
+          find_package(ahocorasick 0.1 REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE ahocorasick::core)
+          EOF
+          cat > consumer/main.cpp <<'EOF'
+          #include <cstdio>
+          #include <string>
+          #include <vector>
+
+          import aho_corasick;
+
+          int main() {
+              const std::vector<std::string> patterns{"he", "she", "hers"};
+              const ac::PatternMatcher matcher(patterns);
+              const auto found =
+                  matcher.find_all("ushers", ac::PatternMatcher::Offsets::Bytes);
+              std::printf("states=%zu matches=%zu\n", matcher.num_states(), found.size());
+              return (matcher.num_states() == 8 && found.size() == 3) ? 0 : 1;
+          }
+          EOF
+
+      - name: Configure, build and run the consumer
+        run: |
+          cmake -S consumer -B consumer/build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build consumer/build
+          LD_LIBRARY_PATH="$PWD/prefix/lib" ./consumer/build/consumer
+
+      - name: Assert the package rejects an incompatible version
+        # SOVERSION and the package version share one root (project(VERSION)), so
+        # this also pins that they cannot drift apart.
+        run: |
+          sed -i 's/ahocorasick 0.1 REQUIRED/ahocorasick 9.0 REQUIRED/' consumer/CMakeLists.txt
+          if cmake -S consumer -B consumer/build-ver -G Ninja \
+               -DCMAKE_PREFIX_PATH="$PWD/prefix" 2>err.txt; then
+            echo "expected find_package to reject version 9.0"
+            exit 1
+          fi
+          grep -q "compatible with requested version" err.txt
+
   minimum-cmake:
     # cmake_minimum_required declares 3.28, the release where FILE_SET
     # CXX_MODULES arrived. A floor nobody configures against is a guess, so this

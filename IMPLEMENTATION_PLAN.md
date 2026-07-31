@@ -247,10 +247,29 @@ consumable via `find_package`, not only by vendoring the tree.
   `libaho_corasick` artefact.
 
 **Risk**: consumers need a module-capable compiler too, since they recompile the
-interface unit. Document it in the README's toolchain table — it is a real
-constraint on who can use the installed package.
+interface unit. Documented in the README's "Using it from another project"
+section.
 
-**Status**: Not Started
+**Status**: Complete
+
+Two things the plan did not anticipate, both found by building a real consumer:
+
+- **The warnings target leaked into the export set.** A static library records
+  even its `PRIVATE` link libraries as `$<LINK_ONLY:...>`, so `install(EXPORT)`
+  demanded that `ahocorasick_warnings` be exported too — putting an internal
+  build detail in the installed package. Fixed with
+  `$<BUILD_LOCAL_INTERFACE:...>` (CMake 3.26, inside the floor).
+- **`ahocorasick::core` did not survive export.** ALIAS targets are not exported,
+  so the package offered `ahocorasick::aho_corasick` while the source tree used
+  `ahocorasick::core`. Fixed with `EXPORT_NAME core`, so both spellings match.
+
+Verified: a consumer project that only calls `find_package(ahocorasick 0.1
+REQUIRED)` and `import aho_corasick;` configures, builds and runs correctly
+against the install tree in both link modes, printing `states=8 matches=3`.
+`find_package(ahocorasick 9.0 REQUIRED)` is rejected. The wheel contains no core
+library or CMake artefacts. All four stages re-checked together: 11 C++ tests
+pass in both link modes, 17 passed / 13 skipped in Python, the standalone build
+fetches nothing, and the toolchain guard still rejects g++-13.
 
 ---
 
