@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <functional>
 #include <numeric>
 #include <stdexcept>
 
@@ -9,7 +10,7 @@ namespace ac {
 namespace {
 
 std::size_t count_code_points(std::string_view text) noexcept {
-    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char c) {
+    return static_cast<std::size_t>(std::ranges::count_if(text, [](char c) {
         return (static_cast<std::uint8_t>(c) & 0xC0) != 0x80;
     }));
 }
@@ -32,10 +33,12 @@ std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const n
     }
 }
 
-PatternMatcher::PatternMatcher(const std::vector<std::string>& patterns) {
-    const std::size_t total_bytes = std::accumulate(
-        patterns.begin(), patterns.end(), std::size_t{0},
-        [](std::size_t sum, const std::string& pattern) { return sum + pattern.size(); });
+PatternMatcher::PatternMatcher(std::span<const std::string> patterns) {
+    // std::transform_reduce, unlike the ranges algorithms, invokes its callable
+    // with () rather than std::invoke — so a pointer-to-member will not do here.
+    const std::size_t total_bytes =
+        std::transform_reduce(patterns.begin(), patterns.end(), std::size_t{0}, std::plus{},
+                              [](const std::string& pattern) { return pattern.size(); });
 
     // Upper bound on the node count: every pattern byte adds at most one state.
     nodes_.reserve(total_bytes + 1);
@@ -57,9 +60,9 @@ PatternMatcher::PatternMatcher(const std::vector<std::string>& patterns) {
                 next = static_cast<std::int32_t>(nodes_.size());
                 nodes_.emplace_back();
                 auto& children = node(state).children;
-                const auto at = std::lower_bound(
-                    children.begin(), children.end(), byte,
-                    [](const auto& entry, std::uint8_t value) { return entry.first < value; });
+                // Projection instead of a comparator lambda: compare on the byte,
+                // keeping children sorted so child() can stop early.
+                const auto at = std::ranges::lower_bound(children, byte, {}, &Child::first);
                 children.insert(at, {byte, next});
             }
             state = next;

@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -44,7 +45,7 @@ public:
 
     // Throws std::invalid_argument if any pattern is empty — an empty pattern
     // matches at every position, which is never what a caller means.
-    explicit PatternMatcher(const std::vector<std::string>& patterns);
+    explicit PatternMatcher(std::span<const std::string> patterns);
 
     // True if any pattern occurs at least once. Stops at the first hit.
     [[nodiscard]] bool matches(std::string_view text) const noexcept;
@@ -61,15 +62,17 @@ public:
 
     [[nodiscard]] std::size_t num_patterns() const noexcept { return patterns_.size(); }
     [[nodiscard]] std::size_t num_states() const noexcept { return nodes_.size(); }
-    [[nodiscard]] const std::vector<Pattern>& patterns() const noexcept { return patterns_; }
+    [[nodiscard]] std::span<const Pattern> patterns() const noexcept { return patterns_; }
 
 private:
+    using Child = std::pair<std::uint8_t, std::int32_t>;  // (byte, next state)
+
     struct Node {
         // Sorted by byte, so the scan below can stop early. Kept as a small vector
         // rather than a dense 256-entry table: dense would be one load instead of
         // a loop, but costs 1 KB per state — hundreds of megabytes at realistic
         // pattern counts. Measured, it also gains nothing here (see README).
-        std::vector<std::pair<std::uint8_t, std::int32_t>> children;
+        std::vector<Child> children;
         std::int32_t fail = 0;
         std::int32_t output_link = -1;       // nearest proper suffix that is terminal
         std::vector<std::int32_t> outputs;   // patterns ending exactly here
@@ -85,10 +88,17 @@ private:
     }
 
     // The innermost operation of every scan, so it lives in the header where the
-    // compiler can inline it. A linear scan rather than std::lower_bound: child
-    // lists are short, and a binary search branches unpredictably on data. Both
-    // were measured — the linear version executes 20% fewer instructions and
-    // takes 40% fewer branch mispredictions (see README).
+    // compiler can inline it. Two deliberate choices here, both measured:
+    //
+    //   - A linear scan, not std::lower_bound. Child lists are short, and a binary
+    //     search branches on data the predictor cannot learn: the linear version
+    //     runs 20% fewer instructions with 40% fewer mispredictions.
+    //   - Written out, not std::ranges::find_if, which cost 6%. find_if locates
+    //     the first entry >= byte and then re-tests equality; this returns the
+    //     instant it matches.
+    //
+    // Everything else in this file uses the ranges algorithms. This is the only
+    // loop hot enough to be worth hand-writing — see README.
     [[nodiscard]] std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept {
         for (const auto& [key, next] : node(state).children) {
             if (key == byte) {

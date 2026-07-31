@@ -234,6 +234,30 @@ Three things were measured and **rejected**:
 The lesson worth taking from this file is the order of operations: profile,
 change the algorithm, and reach for hints and attributes last — if ever.
 
+### Where the standard library helps, and where it does not
+
+`std::span` and the ranges algorithms are used throughout — except in the one
+function the profiler pointed at:
+
+| Place | Choice |
+| --- | --- |
+| `patterns()` return, constructor parameter | `std::span` — decouples the API from `std::vector` |
+| Keeping child lists sorted | `std::ranges::lower_bound` with a projection, which removes the comparator lambda |
+| Counting UTF-8 lead bytes | `std::ranges::count_if` |
+| Summing pattern lengths | `std::transform_reduce`, with a lambda — the classic algorithms invoke with `()` rather than `std::invoke`, so a pointer-to-member does not work there as it does in ranges |
+| **`child()`, the innermost lookup** | **hand-written loop — `std::ranges::find_if` measured 6% slower** |
+
+`find_if` has to locate the first entry `>= byte` and then re-test for equality;
+the hand-written loop returns the instant it matches. At one call per input byte
+that shows up. Everywhere else the algorithms are free and read better.
+
+Two places deliberately keep a raw loop for reasons of clarity rather than speed:
+`scan` is a stateful traversal with early exit, which no C++20 range adaptor
+expresses well, and the output-link walk is a linked list, not a range. Note that
+`scan` *is* the factored-out algorithm — `matches`, `count`, and `find_all` are
+three folds over it, which is the point of "no raw loops" rather than its literal
+reading.
+
 
 ## Deliberate omissions
 

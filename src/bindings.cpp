@@ -156,6 +156,6 @@ NB_MODULE(_core, m) {
         for (const nb::bytes& pattern : std::get<0>(state)) {
             patterns.emplace_back(view_of(pattern));
         }
-        new (&self) PatternMatcher(std::move(patterns));
+        new (&self) PatternMatcher(patterns);
     });
 }
