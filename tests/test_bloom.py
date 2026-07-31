@@ -107,7 +107,9 @@ def test_add_all_matches_repeated_add(items):
     batched = BloomFilter(capacity=200, error_rate=0.01)
     batched.add_all(items)
 
-    assert batched == one_at_a_time
+    # BloomFilter has no __eq__ on purpose (equal bit arrays do not imply equal
+    # contents), so compare the underlying state directly.
+    assert batched.__getstate__() == one_at_a_time.__getstate__()
     assert len(batched) == len(items)
 
 
@@ -162,7 +164,7 @@ def test_pickle_round_trips_exactly(items):
 
     restored = pickle.loads(pickle.dumps(filt))
 
-    assert restored == filt
+    assert restored.__getstate__() == filt.__getstate__()
     assert len(restored) == len(filt)
     assert restored.num_bits == filt.num_bits
     assert all(item in restored for item in items)
@@ -191,13 +193,12 @@ def test_pickled_filter_does_not_depend_on_hash_randomisation():
     assert result.returncode == 0, "filter contents did not survive a new process"
 
 
-def test_equality_compares_contents_not_identity():
+def test_filters_are_not_comparable_for_equality():
+    # No __eq__: identical bit arrays do not imply identical contents, and
+    # differing ones do not imply differing contents. Python falls back to
+    # identity, which is the honest answer.
     left = BloomFilter(capacity=100, error_rate=0.01)
     right = BloomFilter(capacity=100, error_rate=0.01)
-    assert left == right
 
-    left.add("x")
     assert left != right
-
-    right.add("x")
-    assert left == right
+    assert left == left

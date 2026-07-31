@@ -115,10 +115,10 @@ public:
         return merged;
     }
 
-    bool operator==(const BloomFilter& other) const noexcept {
-        return num_bits_ == other.num_bits_ && num_hashes_ == other.num_hashes_ &&
-               count_ == other.count_ && words_ == other.words_;
-    }
+    // Deliberately no operator== / __eq__. Equality is meaningless for a Bloom
+    // filter: identical bit arrays do not imply identical contents, and differing
+    // ones do not imply differing contents. Exposing it would invite a wrong
+    // conclusion. Tests that need a structural comparison use __getstate__.
 
     std::string repr() const {
         return "BloomFilter(capacity=" + std::to_string(capacity_) +
@@ -222,15 +222,6 @@ NB_MODULE(_core, m) {
 
         .def("__len__", &BloomFilter::count,
              "Number of items added, counted exactly — not an estimate.")
-        .def("__eq__",
-             [](const BloomFilter& self, nb::handle other) {
-                 const BloomFilter* rhs = nullptr;
-                 if (!nb::try_cast(other, rhs)) {
-                     return false;
-                 }
-                 return self == *rhs;
-             },
-             "other"_a, nb::is_operator())
         .def("__repr__", &BloomFilter::repr)
 
         .def_prop_ro("capacity", &BloomFilter::capacity, "Items the filter was sized for.")

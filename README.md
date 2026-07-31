@@ -76,7 +76,7 @@ filt.memory_bytes           # ~1.2 MB
 merged = filt | other       # union; ValueError if the parameters differ
 
 import pickle
-pickle.loads(pickle.dumps(filt)) == filt   # bit array round-trips
+restored = pickle.loads(pickle.dumps(filt))   # bit array round-trips intact
 ```
 
 ## Design notes
@@ -156,6 +156,10 @@ Left out on purpose, each marked with a comment where it would go:
   Noted in `CMakeLists.txt`; not useful until you actually ship wheels.
 - **`intersection()`.** Intersecting Bloom filters does not mean what people expect
   — the result over-approximates, and error rates compound unpredictably.
+- **`__eq__`.** Equality is meaningless here: identical bit arrays do not imply
+  identical contents, and differing ones do not imply differing contents. Filters
+  compare by identity, which is the honest answer. Tests that need a structural
+  comparison use `__getstate__()`.
 
 ## Licence
 
