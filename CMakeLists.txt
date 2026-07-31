@@ -16,24 +16,94 @@ endif()
 
 project(ahocorasick_demo VERSION 0.1.0 LANGUAGES CXX)
 
+# Can this toolchain actually build a C++20 module? Asked by building one, rather
+# than by testing the compiler against a hardcoded table of versions. A table has
+# to be maintained, says nothing about the generator, and is wrong the moment a
+# compiler starts or stops supporting modules.
+#
+# The probe is a nested `cmake` run rather than try_compile(). try_compile() is
+# the obvious spelling and does not work here: when the toolchain cannot scan for
+# modules the failure happens while *generating* the test project, which
+# try_compile() reports as a hard CMake error. Configuration then stops inside the
+# probe, and the message below — the entire reason the check exists — never runs.
+# execute_process() captures the exit status instead of propagating it.
+#
+# Both the compiler and the generator are covered, because the probe is
+# configured with this build's own ${CMAKE_GENERATOR}.
+if(NOT DEFINED AHOCORASICK_HAVE_CXX_MODULES)
+    set(_ahocorasick_probe ${CMAKE_CURRENT_BINARY_DIR}/cmake-probe)
+    file(WRITE ${_ahocorasick_probe}/CMakeLists.txt
+"cmake_minimum_required(VERSION 3.28)\n\
+project(ahocorasick_probe LANGUAGES CXX)\n\
+add_executable(probe main.cpp)\n\
+target_sources(probe PRIVATE FILE_SET CXX_MODULES\n\
+               BASE_DIRS \${CMAKE_CURRENT_SOURCE_DIR} FILES probe.cppm)\n\
+target_compile_features(probe PRIVATE cxx_std_20)\n")
+    file(WRITE ${_ahocorasick_probe}/probe.cppm
+         "export module ahocorasick_probe;\nexport int probe() { return 0; }\n")
+    file(WRITE ${_ahocorasick_probe}/main.cpp
+         "import ahocorasick_probe;\nint main() { return probe(); }\n")
+
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -S ${_ahocorasick_probe}
+                                 -B ${_ahocorasick_probe}/build
+                                 -G "${CMAKE_GENERATOR}"
+                                 -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                                 -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+        RESULT_VARIABLE _ahocorasick_probe_configured
+        OUTPUT_VARIABLE _ahocorasick_probe_output
+        ERROR_VARIABLE _ahocorasick_probe_output)
+    if(_ahocorasick_probe_configured EQUAL 0)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${_ahocorasick_probe}/build
+            RESULT_VARIABLE _ahocorasick_probe_built
+            OUTPUT_VARIABLE _ahocorasick_probe_output
+            ERROR_VARIABLE _ahocorasick_probe_output)
+    else()
+        set(_ahocorasick_probe_built 1)
+    endif()
+
+    if(_ahocorasick_probe_configured EQUAL 0 AND _ahocorasick_probe_built EQUAL 0)
+        set(AHOCORASICK_HAVE_CXX_MODULES ON CACHE INTERNAL
+            "Toolchain can build a C++20 module")
+    else()
+        set(AHOCORASICK_HAVE_CXX_MODULES OFF CACHE INTERNAL
+            "Toolchain can build a C++20 module")
+        file(WRITE ${_ahocorasick_probe}/probe.log "${_ahocorasick_probe_output}")
+        set(_ahocorasick_probe_log ${_ahocorasick_probe}/probe.log
+            CACHE INTERNAL "Where the module probe recorded its output")
+    endif()
+endif()
+
 # Fail with something actionable. CMake's own diagnostic says only that the
 # compiler cannot report its import graph, which sends people looking for a CMake
-# problem. The usual cause is subtler: scikit-build-core takes the compiler from
-# the interpreter's own build configuration, so `pip install` can pick a
-# different and older compiler than `cmake` does on the same machine. On Debian
-# and Ubuntu that is the triplet-prefixed name, which update-alternatives leaves
-# alone when you switch the default.
-set(_ahocorasick_min_compiler "GCC 14, Clang 16, or MSVC 19.34")
-if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14) OR
-   (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16) OR
-   (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.34))
+# problem. Two causes are more likely, and neither is obvious from that text.
+#
+# The generator: only Ninja and Visual Studio scan for modules, and CMake's
+# default on Unix is Makefiles, so `cmake -B build` with no -G fails on a
+# perfectly capable compiler.
+#
+# The compiler: scikit-build-core takes it from the interpreter's own build
+# configuration, so `pip install` can pick a different and older one than `cmake`
+# does on the same machine. On Debian and Ubuntu that is the triplet-prefixed
+# name, which update-alternatives leaves alone when you switch the default.
+if(NOT AHOCORASICK_HAVE_CXX_MODULES)
     message(FATAL_ERROR
-            "The algorithm is a C++20 module, which needs a compiler that can "
-            "report its import graph: ${_ahocorasick_min_compiler} or newer.\n"
+            "The algorithm is a C++20 module, and this toolchain cannot build "
+            "one.\n"
             "Configuring with ${CMAKE_CXX_COMPILER_ID} "
-            "${CMAKE_CXX_COMPILER_VERSION} at ${CMAKE_CXX_COMPILER}.\n"
-            "If that path is not the compiler you expect, set CXX and configure "
-            "again, for example CXX=g++-14 pip install -e .")
+            "${CMAKE_CXX_COMPILER_VERSION} at ${CMAKE_CXX_COMPILER}, "
+            "generator ${CMAKE_GENERATOR}.\n"
+            "Modules need a compiler that can report its import graph (GCC 14, "
+            "Clang 16, or MSVC 19.34 and up) and either the Ninja or the Visual "
+            "Studio generator.\n"
+            "If the generator is wrong, configure again with -G Ninja. If that "
+            "compiler path is not the one you expect, set CXX and configure "
+            "again, for example CXX=g++-14 pip install -e .\n"
+            # Referenced rather than inlined: the probe's own output is thirty
+            # lines of nested-configure chatter around one useful sentence, and
+            # pasting it here buries the two causes named above.
+            "Full probe log: ${_ahocorasick_probe_log}")
 endif()
 
 # Defaults ON under scikit-build-core and OFF for a bare `cmake -B build`, so the
@@ -72,6 +142,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Both are inert on MSVC, which is opt-in-export to begin with.
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
+# Every target this project compiles wants the same warnings, so they are stated
+# once and linked in rather than repeated per target. Named for what it holds:
+# the other per-target flags below are deliberately *not* uniform, and hiding
+# them behind a general-sounding "options" target would make a per-target
+# decision look like a shared one.
+add_library(ahocorasick_warnings INTERFACE)
+target_compile_options(ahocorasick_warnings INTERFACE
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
 # --- The algorithm, with no idea Python exists -------------------------------
 # A separate target on purpose. It never sees a nanobind header, so it can be
@@ -150,9 +230,7 @@ set_target_properties(aho_corasick PROPERTIES
 
 # Warnings only — optimisation belongs to CMAKE_BUILD_TYPE. Hardcoding -O3 here
 # would be redundant in Release and would silently defeat a Debug build.
-target_compile_options(aho_corasick PRIVATE
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+target_link_libraries(aho_corasick PRIVATE ahocorasick_warnings)
 
 # --- Seam: a real third-party dependency -------------------------------------
 # The automaton is hand-rolled so the C++ stays readable. Swapping in a library
@@ -219,9 +297,7 @@ target_link_libraries(_core PRIVATE ahocorasick::core)
 target_compile_definitions(_core PRIVATE
                            AHOCORASICK_DEMO_VERSION="${SKBUILD_PROJECT_VERSION}")
 
-target_compile_options(_core PRIVATE
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+target_link_libraries(_core PRIVATE ahocorasick_warnings)
 
 # See the seam comment above. This is the target that absorbs the algorithm's
 # archive in the static build, which is the configuration wheels are built in.

@@ -112,6 +112,30 @@ jobs:
             -DPython_EXECUTABLE="$(which python)"
           cmake --build build-min
 
+  rejects-bad-generator:
+    # The other half of what the module probe checks. Only Ninja and Visual
+    # Studio scan for modules, and Makefiles is CMake's default on Unix - so
+    # `cmake -B build` with no -G fails on a perfectly capable compiler. That was
+    # once an opaque CMake error; this job asserts it is now a diagnostic naming
+    # the generator and the fix.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
+
+      - name: Configure with a generator that cannot scan modules
+        run: |
+          if cmake -S . -B build-make -G "Unix Makefiles" 2>err.txt; then
+            echo "expected configuration to fail with the Makefiles generator"
+            exit 1
+          fi
+          cat err.txt
+          grep -q "C++20 module" err.txt
+          grep -q "Unix Makefiles" err.txt
+          grep -q "\-G Ninja" err.txt
+
   rejects-old-compiler:
     # The build fails on a compiler that cannot scan for modules. That is a
     # supported outcome rather than a crash, so the diagnostic is worth testing:

@@ -110,9 +110,18 @@ Modules are not free. This project needs:
 | Compiler | **GCC 14+, Clang 16+, MSVC 19.34+** | must be able to report its own import graph |
 | Generator | **Ninja or Visual Studio** | the only ones that scan for modules |
 
-There is no header-based fallback. On an older compiler the build stops at
-configure time with a message naming the compiler it found, and a CI job asserts
-that it does.
+There is no header-based fallback. Both requirements are checked at configure
+time by building a throwaway module rather than by comparing version numbers
+against a table — so the check covers the generator as well as the compiler, and
+does not need editing when a new compiler grows module support. On an
+unsupported toolchain the build stops with a message naming the compiler *and*
+the generator it found, and two CI jobs assert that it does.
+
+The probe is a nested `cmake` run rather than `try_compile`, which is the
+obvious spelling and does not work: when the toolchain cannot scan for modules
+the failure happens while *generating* the test project, and `try_compile`
+reports that as a hard error, so configuration stops before the useful message
+can be printed.
 
 **The gotcha worth knowing.** scikit-build-core takes the compiler from the
 interpreter's own build configuration, not from your shell. On Debian and Ubuntu
