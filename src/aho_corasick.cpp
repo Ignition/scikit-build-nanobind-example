@@ -2,45 +2,60 @@
 
 #include <algorithm>
 #include <deque>
+#include <numeric>
 #include <stdexcept>
 
 namespace ac {
 namespace {
 
 std::size_t count_code_points(std::string_view text) noexcept {
-    std::size_t chars = 0;
-    for (const char c : text) {
-        if ((static_cast<std::uint8_t>(c) & 0xC0) != 0x80) {
-            ++chars;
-        }
-    }
-    return chars;
+    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char c) {
+        return (static_cast<std::uint8_t>(c) & 0xC0) != 0x80;
+    }));
 }
 
 }  // namespace
 
 std::int32_t PatternMatcher::child(std::int32_t state, std::uint8_t byte) const noexcept {
-    const auto& children = nodes_[static_cast<std::size_t>(state)].children;
+    const auto& children = node(state).children;
     const auto it = std::lower_bound(
         children.begin(), children.end(), byte,
         [](const auto& entry, std::uint8_t value) { return entry.first < value; });
     return (it != children.end() && it->first == byte) ? it->second : -1;
 }
 
-PatternMatcher::PatternMatcher(std::vector<std::string> patterns)
-    : patterns_(std::move(patterns)) {
+std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const noexcept {
+    // One child() lookup per iteration. Testing the transition in the loop
+    // condition and then repeating it would double the binary searches on the
+    // hot path for every byte that does match.
+    for (;;) {
+        const std::int32_t next = child(state, byte);
+        if (next >= 0) {
+            return next;
+        }
+        if (state == 0) {
+            return 0;  // no transition from the root: stay put
+        }
+        state = node(state).fail;
+    }
+}
+
+PatternMatcher::PatternMatcher(const std::vector<std::string>& patterns) {
+    const std::size_t total_bytes = std::accumulate(
+        patterns.begin(), patterns.end(), std::size_t{0},
+        [](std::size_t sum, const std::string& pattern) { return sum + pattern.size(); });
+
+    // Upper bound on the node count: every pattern byte adds at most one state.
+    nodes_.reserve(total_bytes + 1);
     nodes_.emplace_back();  // root
+    patterns_.reserve(patterns.size());
 
-    pattern_bytes_.reserve(patterns_.size());
-    pattern_chars_.reserve(patterns_.size());
-
-    for (std::size_t index = 0; index < patterns_.size(); ++index) {
-        const std::string& pattern = patterns_[index];
+    for (const std::string& pattern : patterns) {
         if (pattern.empty()) {
             throw std::invalid_argument("patterns must not be empty");
         }
-        pattern_bytes_.push_back(pattern.size());
-        pattern_chars_.push_back(count_code_points(pattern));
+        const auto index = static_cast<std::int32_t>(patterns_.size());
+        patterns_.push_back({pattern, count_code_points(pattern)});
 
         std::int32_t state = 0;
         for (const char c : pattern) {
@@ -49,7 +64,7 @@ PatternMatcher::PatternMatcher(std::vector<std::string> patterns)
             if (next < 0) {
                 next = static_cast<std::int32_t>(nodes_.size());
                 nodes_.emplace_back();
-                auto& children = nodes_[static_cast<std::size_t>(state)].children;
+                auto& children = node(state).children;
                 const auto at = std::lower_bound(
                     children.begin(), children.end(), byte,
                     [](const auto& entry, std::uint8_t value) { return entry.first < value; });
@@ -59,8 +74,7 @@ PatternMatcher::PatternMatcher(std::vector<std::string> patterns)
         }
         // Duplicate patterns land on the same node; both indices are recorded so
         // find_all can report each one the caller asked about.
-        nodes_[static_cast<std::size_t>(state)].outputs.push_back(
-            static_cast<std::int32_t>(index));
+        node(state).outputs.push_back(index);
     }
 
     build_failure_links();
@@ -71,41 +85,39 @@ void PatternMatcher::build_failure_links() {
     // children need it.
     std::deque<std::int32_t> queue;
 
-    for (const auto& [byte, node] : nodes_[0].children) {
+    for (const auto& [byte, child_state] : nodes_[0].children) {
         (void)byte;
-        nodes_[static_cast<std::size_t>(node)].fail = 0;
-        queue.push_back(node);
+        node(child_state).fail = 0;
+        queue.push_back(child_state);
     }
 
     while (!queue.empty()) {
         const std::int32_t state = queue.front();
         queue.pop_front();
 
-        // Copy: inserting into nodes_ during the loop would invalidate a reference.
-        const auto children = nodes_[static_cast<std::size_t>(state)].children;
+        // No node is added here — the trie is complete before this runs — so a
+        // reference is safe and avoids copying a vector per state.
+        const auto& children = node(state).children;
         for (const auto& [byte, next] : children) {
-            std::int32_t fail = nodes_[static_cast<std::size_t>(state)].fail;
+            std::int32_t fail = node(state).fail;
             while (fail != 0 && child(fail, byte) < 0) {
-                fail = nodes_[static_cast<std::size_t>(fail)].fail;
+                fail = node(fail).fail;
             }
             const std::int32_t candidate = child(fail, byte);
             // `candidate == next` happens at depth 1, where the only match for the
             // byte is the node itself; its failure link is the root.
-            nodes_[static_cast<std::size_t>(next)].fail =
-                (candidate >= 0 && candidate != next) ? candidate : 0;
+            const std::int32_t target = (candidate >= 0 && candidate != next) ? candidate : 0;
 
-            const auto& target = nodes_[static_cast<std::size_t>(
-                nodes_[static_cast<std::size_t>(next)].fail)];
-            nodes_[static_cast<std::size_t>(next)].output_link =
-                target.outputs.empty() ? target.output_link
-                                       : nodes_[static_cast<std::size_t>(next)].fail;
+            node(next).fail = target;
+            node(next).output_link =
+                node(target).outputs.empty() ? node(target).output_link : target;
 
             queue.push_back(next);
         }
     }
 }
 
-bool PatternMatcher::matches(std::string_view text) const {
+bool PatternMatcher::matches(std::string_view text) const noexcept {
     bool found = false;
     scan(text, [&](std::size_t, std::size_t, std::size_t) {
         found = true;
@@ -114,7 +126,7 @@ bool PatternMatcher::matches(std::string_view text) const {
     return found;
 }
 
-std::size_t PatternMatcher::count(std::string_view text) const {
+std::size_t PatternMatcher::count(std::string_view text) const noexcept {
     std::size_t total = 0;
     scan(text, [&](std::size_t, std::size_t, std::size_t) {
         ++total;
@@ -129,8 +141,9 @@ std::vector<PatternMatcher::Match> PatternMatcher::find_all(std::string_view tex
     const bool by_char = offsets == Offsets::Characters;
 
     scan(text, [&](std::size_t pattern, std::size_t byte_end, std::size_t char_end) {
+        const Pattern& info = patterns_[pattern];
         const std::size_t end = by_char ? char_end : byte_end;
-        const std::size_t length = by_char ? pattern_chars_[pattern] : pattern_bytes_[pattern];
+        const std::size_t length = by_char ? info.chars : info.text.size();
         found.push_back({end - length, pattern});
         return true;
     });

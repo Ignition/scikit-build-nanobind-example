@@ -59,8 +59,8 @@ Found to_pairs(const std::vector<PatternMatcher::Match>& matches) {
 std::vector<nb::bytes> patterns_as_bytes(const PatternMatcher& matcher) {
     std::vector<nb::bytes> out;
     out.reserve(matcher.patterns().size());
-    for (const std::string& pattern : matcher.patterns()) {
-        out.emplace_back(pattern.data(), pattern.size());
+    for (const PatternMatcher::Pattern& pattern : matcher.patterns()) {
+        out.emplace_back(pattern.text.data(), pattern.text.size());
     }
     return out;
 }

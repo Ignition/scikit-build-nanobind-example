@@ -12,7 +12,7 @@ It is also an honest example of *when* a C++ extension is worth the trouble. The
 automaton is expensive to build and cheap to reuse, and scanning costs the same
 whether you registered ten patterns or ten thousand — so the object living behind
 the boundary earns its keep, rather than being a Python data structure in a
-costume. At 10,000 patterns it is **81x faster** than the obvious Python
+costume. At 10,000 patterns it is **96x faster** than the obvious Python
 approach; at ten patterns it is a dead heat. Both numbers are below.
 
 ## What it demonstrates
@@ -32,8 +32,7 @@ approach; at ten patterns it is a dead heat. Both numbers are below.
 
 ## The layout that matters
 
-The algorithm and the bindings are separate build targets, and the separation is
-enforced rather than merely intended:
+The algorithm and the bindings are separate build targets:
 
 ```
 src/aho_corasick.hpp   pure C++20 — no nanobind include anywhere
@@ -42,7 +41,7 @@ src/bindings.cpp       the only file containing NB_MODULE
 ```
 
 `aho_corasick` compiles, links, and can be unit-tested without Python existing —
-and that is enforced, not merely intended:
+and that is enforced by the build, not merely intended:
 
 ```bash
 cmake -S . -B build-standalone -G Ninja   # no Python, no nanobind, no pip
@@ -159,8 +158,8 @@ A `PatternMatcher` is immutable once constructed, so sharing one across threads
 needs no lock — unusually, this is safe rather than merely permitted.
 
 **Why the automaton is not perfectly flat.** Scan time does creep up with pattern
-count (1.8 ms → 22 ms across three orders of magnitude) because more states means
-worse cache locality, not more work per byte. The complexity claim is about
+count (1.9 ms → 18.6 ms across three orders of magnitude) because more states
+means worse cache locality, not more work per byte. The complexity claim is about
 algorithmic cost; memory hierarchy still charges rent.
 
 ## Benchmarks
@@ -182,16 +181,16 @@ single compiled alternation of all patterns.
 
 | patterns | automaton | `str.count` loop | speedup |
 | --- | --- | --- | --- |
-| 10 | 1.80 ms | 1.84 ms | 1.0x |
-| 100 | 1.99 ms | 17.5 ms | 8.8x |
-| 1,000 | 4.32 ms | 177 ms | 41x |
-| 10,000 | 22.1 ms | 1,782 ms | **81x** |
+| 10 | 1.86 ms | 1.84 ms | 1.0x |
+| 100 | 2.00 ms | 17.5 ms | 8.8x |
+| 1,000 | 3.86 ms | 177 ms | 46x |
+| 10,000 | 18.6 ms | 1,782 ms | **96x** |
 
 **All three approaches at 10,000 patterns:**
 
 | approach | build | scan |
 | --- | --- | --- |
-| `PatternMatcher` | 4.83 ms | **21.8 ms** |
+| `PatternMatcher` | 4.16 ms | **18.8 ms** |
 | `re` alternation | 4.55 ms | 6,324 ms |
 | `str.count` loop | — | 1,753 ms |
 
@@ -223,7 +222,18 @@ Left out on purpose, each marked with a comment where it would go:
   cost. Noted in `CMakeLists.txt`; not useful until you actually ship wheels.
 - **A dense 256-entry goto table per state.** Faster scanning, but 1 KB per state
   runs to hundreds of megabytes at realistic pattern counts. Children are kept in
-  a sorted vector and binary-searched instead.
+  a sorted vector and binary-searched instead. (Doing it for the *root only* is
+  cheap and would help, since the root is the hottest state — but it is an
+  optimisation, and this is a demo.)
+- **A flattened CSR node layout.** Each `Node` holds two `std::vector`s, so
+  traversal chases pointers. Packing all children into one array with per-node
+  offsets would cut the cache misses that dominate the 10,000-pattern case. It
+  would also make the code substantially harder to read, which is the wrong trade
+  here.
+- **A public callback-based scan.** `find_all` allocates a vector; the private
+  `scan` it is built on takes a callback and does not. Exposing that would let
+  callers avoid the allocation entirely, and is what the C++ library would want if
+  it were the product rather than the pretext.
 
 ## Licence
 

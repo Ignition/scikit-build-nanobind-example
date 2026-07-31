@@ -28,6 +28,13 @@ public:
     struct Match {
         std::size_t start;          // offset of the occurrence within the text
         std::size_t pattern_index;  // index into the pattern list
+
+        bool operator==(const Match&) const = default;
+    };
+
+    struct Pattern {
+        std::string text;
+        std::size_t chars;  // length in code points; text.size() is the byte length
     };
 
     // Text arriving from a Python `str` is UTF-8, where a byte offset is a
@@ -37,21 +44,24 @@ public:
 
     // Throws std::invalid_argument if any pattern is empty — an empty pattern
     // matches at every position, which is never what a caller means.
-    explicit PatternMatcher(std::vector<std::string> patterns);
+    explicit PatternMatcher(const std::vector<std::string>& patterns);
 
     // True if any pattern occurs at least once. Stops at the first hit.
-    bool matches(std::string_view text) const;
+    [[nodiscard]] bool matches(std::string_view text) const noexcept;
 
     // Total occurrences of all patterns, counting overlaps.
-    std::size_t count(std::string_view text) const;
+    [[nodiscard]] std::size_t count(std::string_view text) const noexcept;
 
     // Every occurrence, in the order encountered. Overlapping and nested matches
     // are all reported: searching "he", "she", "hers" in "shers" yields all three.
-    std::vector<Match> find_all(std::string_view text, Offsets offsets) const;
+    //
+    // Offsets::Characters assumes valid UTF-8; on arbitrary bytes the character
+    // positions are meaningless (but harmless — no undefined behaviour).
+    [[nodiscard]] std::vector<Match> find_all(std::string_view text, Offsets offsets) const;
 
-    std::size_t num_patterns() const noexcept { return patterns_.size(); }
-    std::size_t num_states() const noexcept { return nodes_.size(); }
-    const std::vector<std::string>& patterns() const noexcept { return patterns_; }
+    [[nodiscard]] std::size_t num_patterns() const noexcept { return patterns_.size(); }
+    [[nodiscard]] std::size_t num_states() const noexcept { return nodes_.size(); }
+    [[nodiscard]] const std::vector<Pattern>& patterns() const noexcept { return patterns_; }
 
 private:
     struct Node {
@@ -64,23 +74,35 @@ private:
         std::vector<std::int32_t> outputs;   // patterns ending exactly here
     };
 
-    std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept;
+    // States are held as int32_t indices, so every access would otherwise need a
+    // static_cast. One named accessor is worth fifteen casts inline.
+    [[nodiscard]] const Node& node(std::int32_t state) const noexcept {
+        return nodes_[static_cast<std::size_t>(state)];
+    }
+    [[nodiscard]] Node& node(std::int32_t state) noexcept {
+        return nodes_[static_cast<std::size_t>(state)];
+    }
+
+    [[nodiscard]] std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept;
+
+    // The automaton's transition function: follow failure links until the byte
+    // can be consumed, or fall back to the root.
+    [[nodiscard]] std::int32_t step(std::int32_t state, std::uint8_t byte) const noexcept;
+
     void build_failure_links();
 
     // Single shared traversal. `on_match(pattern_index, byte_end, char_end)`
     // returns false to stop early, which is how `matches` avoids scanning the
     // rest of the text.
     template <typename OnMatch>
-    void scan(std::string_view text, OnMatch&& on_match) const;
+    void scan(std::string_view text, OnMatch on_match) const;
 
     std::vector<Node> nodes_;
-    std::vector<std::string> patterns_;
-    std::vector<std::size_t> pattern_bytes_;
-    std::vector<std::size_t> pattern_chars_;
+    std::vector<Pattern> patterns_;
 };
 
 template <typename OnMatch>
-void PatternMatcher::scan(std::string_view text, OnMatch&& on_match) const {
+void PatternMatcher::scan(std::string_view text, OnMatch on_match) const {
     std::int32_t state = 0;
     std::size_t chars = 0;
 
@@ -94,16 +116,11 @@ void PatternMatcher::scan(std::string_view text, OnMatch&& on_match) const {
             ++chars;
         }
 
-        while (state != 0 && child(state, byte) < 0) {
-            state = nodes_[static_cast<std::size_t>(state)].fail;
-        }
-        const std::int32_t next = child(state, byte);
-        state = next < 0 ? 0 : next;
+        state = step(state, byte);
 
         // Walk the suffix chain: a match here may also complete shorter patterns.
-        for (std::int32_t out = state; out != -1;
-             out = nodes_[static_cast<std::size_t>(out)].output_link) {
-            for (const std::int32_t pattern : nodes_[static_cast<std::size_t>(out)].outputs) {
+        for (std::int32_t out = state; out != -1; out = node(out).output_link) {
+            for (const std::int32_t pattern : node(out).outputs) {
                 if (!on_match(static_cast<std::size_t>(pattern), i + 1, chars)) {
                     return;
                 }
