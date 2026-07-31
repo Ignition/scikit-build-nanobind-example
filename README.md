@@ -22,7 +22,8 @@ approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 | Backend wiring, dependency pinning, editable rebuilds | `pyproject.toml` |
 | Finding Python and nanobind, install rules, per-target flags | `CMakeLists.txt` |
 | **A C++20 module in a `FILE_SET CXX_MODULES`** | `CMakeLists.txt` |
-| **Algorithm with no knowledge of Python** | `src/aho_corasick.cppm` |
+| **Algorithm with no knowledge of Python** | `src/aho_corasick.cppm` + `.cpp` |
+| **Interface / implementation split across module units** | `src/aho_corasick.cpp` |
 | **Bindings, and nothing else** | `src/bindings.cpp` |
 | Overload resolution (`str` and `bytes`) | `matches` / `count` / `find_all` |
 | Converting an arbitrary Python iterable | `collect_patterns` |
@@ -75,7 +76,8 @@ boundary. It expands to nothing in a static build.
 The annotation is per member rather than on the class, so that the ABI surface
 matches the language surface: annotating the class would export the private trie
 internals the module exists to hide. `nm -D --defined-only libaho_corasick.so`
-lists the seven public functions and nothing else.
+lists the seven public functions and one weak libstdc++ template instantiation —
+no `step`, no `child`, no `build_failure_links`, no `scan`.
 
 ### Why two files, not one
 
@@ -87,6 +89,11 @@ Splitting the definitions into a module implementation unit, which names the
 module without exporting from it, restores what a header and source pair gives
 for free: editing the implementation recompiles only that file, while editing
 the interface correctly rebuilds importers.
+
+The exception is the handful of accessors still defined in-class in the
+interface, `child` and `node` among them, which are there because they must stay
+inlinable in the hot loop. Editing one of those does rebuild importers. That is
+the trade, and it is the same one a header forces.
 
 The tidier spelling for this is a private module fragment, `module :private;`,
 which keeps both halves in one file. GCC has not implemented it, in 14 or in 16,
@@ -124,13 +131,21 @@ OFF for a bare `cmake -B build`. A CI job builds this way on every push, so a
 stray nanobind include in the algorithm breaks the build rather than the claim.
 
 
-That buys three things: the algorithm can be reused in a non-Python program, the
-binding layer stays thin enough to read in one sitting, and the two get
-*different compiler treatment* — nanobind's size-optimised `-Os` applies only to
-the binding shim, where no measurable time is spent, while the algorithm keeps
-the build type's own optimisation level. Neither target hardcodes an
-optimisation flag: `-O3` written into `target_compile_options` is redundant in
-Release and silently ruins a Debug build.
+That buys two things: the algorithm can be reused in a non-Python program, and
+the binding layer stays thin enough to read in one sitting. Separate targets also
+allow separate compiler flags, which is usually the third benefit — nanobind
+compiles the binding shim at `-Os` by default, and that shim is where no
+measurable time is spent.
+
+This project gives that up, deliberately. `nanobind_add_module` is passed
+`NOMINSIZE`, because GCC 14 cannot compile a translation unit that imports a
+module at `-Os`: it fails to emit the body of an `always_inline` standard library
+function reached through the module's global module fragment. Both targets
+therefore build at the build type's own level. Nothing in the shim is hot enough
+for it to matter, but the flags are no longer the illustration they were before
+the module conversion. Neither target hardcodes an optimisation flag either way:
+`-O3` written into `target_compile_options` is redundant in Release and silently
+ruins a Debug build.
 
 Hidden visibility is a project-wide default rather than a per-target property, so
 a target added later cannot silently start from `default`. Without it every
@@ -170,7 +185,8 @@ The choices worth knowing about before you copy this:
 | Python range | `>=3.9`, CI on 3.9 / 3.12 / 3.13 | Claim only what is tested |
 | CMake floor | 3.28, pinned in a CI job | `FILE_SET CXX_MODULES` needs it; a floor nobody configures against is a guess |
 | Optimisation flags | Left to `CMAKE_BUILD_TYPE` | Hardcoded `-O3` is redundant in Release and breaks Debug |
-| Symbol visibility | Hidden on the library too | Otherwise the static library's symbols leak out of the module |
+| Symbol visibility | Hidden project-wide, exported per member | Otherwise the algorithm's symbols leak out of the extension module |
+| Library type | `BUILD_SHARED_LIBS`, forced static for the wheel | A shared core in a wheel needs an `$ORIGIN` RPATH and buys nothing |
 
 ## Quick start
 
@@ -184,7 +200,7 @@ CXX=g++-14 .venv/bin/python -m pip install -e ".[test]" --no-build-isolation
 `nanobind` and `scikit-build-core` present in the environment you are developing
 against, not just in a throwaway isolated one.
 
-After the first install, editing any `.cpp` is enough — importing
+After the first install, editing any `.cpp` or `.cppm` is enough — importing
 `ahocorasick_demo` re-runs Ninja automatically
 (`tool.scikit-build.editable.rebuild`), so there is no reinstall step in the
 inner loop.
@@ -304,8 +320,8 @@ Three things were measured and **rejected**:
   branch that genuinely goes both ways. Changing the algorithm fixed it; annotating
   it would not have. This is the trap the attributes invite.
 - **`__attribute__((always_inline))` on `child`: no measurable gain** over simply
-  defining it in the header and letting the compiler decide. The attribute was
-  compiler-specific clutter buying 0.4%.
+  defining it in-class in the module interface and letting the compiler decide.
+  The attribute was compiler-specific clutter buying 0.4%.
 - **A dense 256-entry root transition table: no gain at all** once the linear scan
   was in (14.79 ms vs 14.79 ms). It looked obviously worthwhile beforehand.
 
