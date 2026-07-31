@@ -25,12 +25,6 @@ jobs:
       matrix:
         python-version: ["3.9", "3.12", "3.13"]
 
-    # CMake initializes CMAKE_CXX_COMPILER_LAUNCHER from this, so it reaches the
-    # build through `pip install` without threading -D flags through
-    # scikit-build-core.
-    env:
-      CMAKE_CXX_COMPILER_LAUNCHER: ccache
-
     steps:
       - uses: actions/checkout@v4
 
@@ -39,30 +33,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install a module-capable compiler
-        run: sudo apt-get install -y g++-14 ccache
-
-      - name: Restore the compiler cache
-        # nanobind's own sources are most of what this job compiles and they do
-        # not change between runs. Keyed by Python version because the binding
-        # layer is compiled against each one separately. ccache decides what is
-        # actually reusable by hashing preprocessed input, so restoring an older
-        # cache is safe - a stale entry misses rather than being served.
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-test-${{ matrix.python-version }}-${{ github.sha }}
-          restore-keys: ccache-test-${{ matrix.python-version }}-
+        run: sudo apt-get install -y g++-14
 
       - name: Build and install
         # Build isolation left on, unlike the local dev loop: this must prove the
         # declared build dependencies are sufficient on their own. CMake and Ninja
         # come from scikit-build-core's own requirements when absent from the image.
-        run: |
-          ccache -z    # counters only; the cache itself is kept
-          python -m pip install ".[test]" --verbose
-
-      - name: Report cache effectiveness
-        run: ccache -s
+        #
+        # Deliberately not ccache'd, unlike cpp-tests and minimum-cmake. Build
+        # isolation means pip builds in a fresh environment every time, so most of
+        # this job is resolving and downloading dependencies rather than
+        # compiling; caching the compile bought nothing measurable and cost a
+        # cache restore and save on every run.
+        run: python -m pip install ".[test]" --verbose
 
       - name: Test
         # Run from the repo root so pytest finds tests/, while `ahocorasick_demo`
