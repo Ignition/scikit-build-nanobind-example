@@ -7,13 +7,15 @@
 # Visual Studio generator. There is no fallback path; see README.
 cmake_minimum_required(VERSION 3.28...3.31)
 
-# SKBUILD_PROJECT_VERSION is only defined when scikit-build-core drives the
-# build. The whole point of splitting the algorithm out is that CMake can be run
-# directly, so fall back rather than expanding to nothing.
-if(NOT DEFINED SKBUILD_PROJECT_VERSION)
-    set(SKBUILD_PROJECT_VERSION "0.0.0-standalone")
-endif()
-
+# The single source of truth for the version, in both directions: it reaches
+# Python as wheel metadata (scikit-build-core reads this line; see the
+# tool.scikit-build.metadata table in pyproject.toml) and C++ as
+# AHOCORASICK_DEMO_VERSION below.
+#
+# It lives here rather than in pyproject.toml because the C++ library must have a
+# version in a build where Python is absent by design. Reading it from packaging
+# metadata would mean SOVERSION and the installed CMake package version were
+# correct only when a Python file happened to be present and parseable.
 project(ahocorasick_demo VERSION 0.1.0 LANGUAGES CXX)
 
 # Can this toolchain actually build a C++20 module? Asked by building one, rather
@@ -295,7 +297,7 @@ find_package(nanobind CONFIG REQUIRED)
 nanobind_add_module(_core FREE_THREADED NOMINSIZE src/bindings.cpp)
 target_link_libraries(_core PRIVATE ahocorasick::core)
 target_compile_definitions(_core PRIVATE
-                           AHOCORASICK_DEMO_VERSION="${SKBUILD_PROJECT_VERSION}")
+                           AHOCORASICK_DEMO_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(_core PRIVATE ahocorasick_warnings)
 

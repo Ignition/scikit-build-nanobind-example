@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "ahocorasick-demo"
-version = "0.1.0"                     # single source of truth; reaches C++ as AHOCORASICK_DEMO_VERSION
+dynamic = ["version"]                 # read from CMakeLists.txt; see tool.scikit-build.metadata below
 description = "Aho-Corasick multi-pattern matching in C++20, bound with nanobind — a scikit-build-core template"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,6 +23,21 @@ test = ["pytest >= 7", "hypothesis >= 6", "pytest-benchmark >= 4"]
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"       # persistent, so Ninja can actually be incremental
 wheel.packages = ["src/ahocorasick_demo"]    # src/ layout: tests import the installed copy, never the tree
+
+# The version is declared by project(VERSION ...) in CMakeLists.txt and read back
+# here, rather than the other way around. The C++ library is installable and
+# find_package-able on its own, so it needs a version in a build where Python is
+# absent; deriving CMake's version from packaging metadata would leave SOVERSION
+# and the exported package version correct only when this file happened to be
+# present and parseable.
+#
+# Pinned by a test: tests/test_package_layout.py compares __version__ against the
+# version parsed out of CMakeLists.txt, so a regex that silently stops matching
+# fails the suite rather than shipping the wrong number.
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = '''project\([^)]*VERSION\s+(?P<value>[0-9]+(?:\.[0-9]+)*)'''
 
 # Importing ahocorasick_demo re-runs Ninja if any source changed. This is the payoff of
 # `build-dir` above: without it the build tree is a temp dir and every rebuild is cold.

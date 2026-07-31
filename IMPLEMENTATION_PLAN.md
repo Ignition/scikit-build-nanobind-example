@@ -115,11 +115,19 @@ package has a real version in a build where Python is absent by design.
   `CMakeLists.txt`, so the regex provider is pinned by a test rather than
   trusted.
 
-**Risk**: the exact `scikit-build-core` metadata-provider key names need
-confirming against the installed version's documentation before writing them —
-verify first, don't copy from memory.
+**Risk, resolved**: provider keys confirmed against the installed
+scikit-build-core 1.0.3 — `scikit_build_core/metadata/regex.py` accepts
+`input`, `regex`, `result`, `remove`, and the shipped JSON schema confirms the
+`[tool.scikit-build.metadata.version]` table shape.
 
-**Status**: Not Started
+**Status**: Complete
+
+Verified: bumping only `project(VERSION)` to 0.2.0 produced both an
+`ahocorasick_demo-0.2.0` wheel and `libaho_corasick.so.0.2.0`, then reverted. A
+deliberately broken regex fails the wheel build with `Couldn't find ... in
+CMakeLists.txt`, so the drift mode is a hard failure rather than a silent one.
+23 passed / 13 skipped; standalone build unaffected; no `SKBUILD_PROJECT_VERSION`
+references remain.
 
 ---
 

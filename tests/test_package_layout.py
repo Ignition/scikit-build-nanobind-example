@@ -1,6 +1,8 @@
 """The packaging is half the point of this template, so it gets tested too."""
 
+import importlib.metadata
 import pathlib
+import re
 
 import ahocorasick_demo
 from ahocorasick_demo import _core
@@ -17,9 +19,29 @@ def test_no_importable_package_at_the_repo_root():
     assert (REPO_ROOT / "src" / "ahocorasick_demo" / "__init__.py").is_file()
 
 
-def test_version_comes_from_pyproject_via_cmake():
-    # pyproject.toml -> SKBUILD_PROJECT_VERSION -> AHOCORASICK_DEMO_VERSION -> C++.
-    assert ahocorasick_demo.__version__ == "0.1.0"
+def test_version_comes_from_cmake_via_pyproject():
+    # CMakeLists.txt -> scikit-build-core's regex provider -> wheel metadata, and
+    # CMakeLists.txt -> AHOCORASICK_DEMO_VERSION -> C++. The declaration lives in
+    # CMake because the library is installable on its own, and a package that
+    # builds without Python still needs a version for SOVERSION and find_package.
+    #
+    # Compared against the parsed value rather than a literal: a hardcoded "0.1.0"
+    # here would still pass if the regex provider silently stopped matching and
+    # both numbers were bumped independently, which is the drift this arrangement
+    # exists to prevent.
+    cmake_text = (REPO_ROOT / "CMakeLists.txt").read_text()
+    declared = re.search(r"project\([^)]*VERSION\s+([0-9.]+)", cmake_text)
+
+    assert declared, "no project(... VERSION ...) found; the regex provider would fail too"
+
+    # The C++ route: CMakeLists.txt -> AHOCORASICK_DEMO_VERSION -> _core.
+    assert ahocorasick_demo.__version__ == declared.group(1)
+
+    # The packaging route: CMakeLists.txt -> scikit-build-core's regex provider ->
+    # wheel metadata. Checked separately because it shares no machinery with the
+    # line above — the C++ define would still be right if the regex stopped
+    # matching, and the wheel would silently take a different version.
+    assert importlib.metadata.version("ahocorasick-demo") == declared.group(1)
 
 
 def test_extension_is_a_compiled_module():

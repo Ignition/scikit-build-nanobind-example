@@ -190,7 +190,7 @@ The choices worth knowing about before you copy this:
 | C++ standard | C++20 | `std::span`, the ranges algorithms and their projections |
 | Free-threading | On | No mutable module state, and a matcher is immutable once built |
 | Benchmarks | Record-only, skipped in CI | Numbers on demand; CI stays a pure correctness gate |
-| Version | `pyproject.toml` → CMake → C++ | One source of truth via `SKBUILD_PROJECT_VERSION` |
+| Version | `CMakeLists.txt` → `pyproject.toml` → C++ | The C++ package needs a version when Python is absent |
 | Python range | `>=3.9`, CI on 3.9 / 3.12 / 3.13 | Claim only what is tested |
 | CMake floor | 3.28, pinned in a CI job | `FILE_SET CXX_MODULES` needs it; a floor nobody configures against is a guess |
 | Optimisation flags | Left to `CMAKE_BUILD_TYPE` | Hardcoded `-O3` is redundant in Release and breaks Debug |
