@@ -16,14 +16,6 @@ std::size_t count_code_points(std::string_view text) noexcept {
 
 }  // namespace
 
-std::int32_t PatternMatcher::child(std::int32_t state, std::uint8_t byte) const noexcept {
-    const auto& children = node(state).children;
-    const auto it = std::lower_bound(
-        children.begin(), children.end(), byte,
-        [](const auto& entry, std::uint8_t value) { return entry.first < value; });
-    return (it != children.end() && it->first == byte) ? it->second : -1;
-}
-
 std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const noexcept {
     // One child() lookup per iteration. Testing the transition in the loop
     // condition and then repeating it would double the binary searches on the

@@ -65,9 +65,10 @@ public:
 
 private:
     struct Node {
-        // Sorted by byte so lookup is a binary search. A dense 256-entry table per
-        // node would scan faster but costs 1 KB per state, which at realistic
-        // pattern counts runs to hundreds of megabytes.
+        // Sorted by byte, so the scan below can stop early. Kept as a small vector
+        // rather than a dense 256-entry table: dense would be one load instead of
+        // a loop, but costs 1 KB per state — hundreds of megabytes at realistic
+        // pattern counts. Measured, it also gains nothing here (see README).
         std::vector<std::pair<std::uint8_t, std::int32_t>> children;
         std::int32_t fail = 0;
         std::int32_t output_link = -1;       // nearest proper suffix that is terminal
@@ -83,7 +84,22 @@ private:
         return nodes_[static_cast<std::size_t>(state)];
     }
 
-    [[nodiscard]] std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept;
+    // The innermost operation of every scan, so it lives in the header where the
+    // compiler can inline it. A linear scan rather than std::lower_bound: child
+    // lists are short, and a binary search branches unpredictably on data. Both
+    // were measured — the linear version executes 20% fewer instructions and
+    // takes 40% fewer branch mispredictions (see README).
+    [[nodiscard]] std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept {
+        for (const auto& [key, next] : node(state).children) {
+            if (key == byte) {
+                return next;
+            }
+            if (key > byte) {
+                break;  // sorted, so no later entry can match
+            }
+        }
+        return -1;
+    }
 
     // The automaton's transition function: follow failure links until the byte
     // can be consumed, or fall back to the root.

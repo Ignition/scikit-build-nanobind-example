@@ -12,8 +12,8 @@ It is also an honest example of *when* a C++ extension is worth the trouble. The
 automaton is expensive to build and cheap to reuse, and scanning costs the same
 whether you registered ten patterns or ten thousand — so the object living behind
 the boundary earns its keep, rather than being a Python data structure in a
-costume. At 10,000 patterns it is **96x faster** than the obvious Python
-approach; at ten patterns it is a dead heat. Both numbers are below.
+costume. At 10,000 patterns it is **115x faster** than the obvious Python
+approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 
 ## What it demonstrates
 
@@ -82,7 +82,7 @@ The choices worth knowing about before you copy this:
 | Layout | `src/` layout, package wrapping a private `_core` | Somewhere to put stubs, `py.typed`, and future pure-Python code |
 | Keys | `str` + `bytes` overloads | `str` is what people reach for; `bytes` is what is exact |
 | Offsets | Code points for `str`, bytes for `bytes` | Byte offsets into a `str` disagree with Python's own indexing |
-| Trie children | Sorted vector, binary searched | A dense table scans faster but costs 1 KB per state |
+| Trie children | Sorted vector, linear scan | Measured: 20% fewer instructions and 40% fewer branch mispredicts than binary search |
 | Tests | pytest + Hypothesis against a brute-force oracle | The oracle is obviously correct; the automaton is not |
 | Stubs | `nanobind_add_stub` at build time | Cannot drift from the bindings; the fiddly bit worth recording |
 | C++ standard | C++20 | `std::span`, designated initialisers, `<bit>` |
@@ -158,7 +158,7 @@ A `PatternMatcher` is immutable once constructed, so sharing one across threads
 needs no lock — unusually, this is safe rather than merely permitted.
 
 **Why the automaton is not perfectly flat.** Scan time does creep up with pattern
-count (1.9 ms → 18.6 ms across three orders of magnitude) because more states
+count (1.2 ms → 15.2 ms across three orders of magnitude) because more states
 means worse cache locality, not more work per byte. The complexity claim is about
 algorithmic cost; memory hierarchy still charges rent.
 
@@ -181,29 +181,59 @@ single compiled alternation of all patterns.
 
 | patterns | automaton | `str.count` loop | speedup |
 | --- | --- | --- | --- |
-| 10 | 1.86 ms | 1.84 ms | 1.0x |
-| 100 | 2.00 ms | 17.5 ms | 8.8x |
-| 1,000 | 3.86 ms | 177 ms | 46x |
-| 10,000 | 18.6 ms | 1,782 ms | **96x** |
+| 10 | 1.22 ms | 1.83 ms | 1.5x |
+| 100 | 1.34 ms | 17.4 ms | 13x |
+| 1,000 | 2.79 ms | 177 ms | 63x |
+| 10,000 | 15.2 ms | 1,753 ms | **115x** |
 
 **All three approaches at 10,000 patterns:**
 
 | approach | build | scan |
 | --- | --- | --- |
-| `PatternMatcher` | 4.16 ms | **18.8 ms** |
-| `re` alternation | 4.55 ms | 6,324 ms |
-| `str.count` loop | — | 1,753 ms |
+| `PatternMatcher` | 4.29 ms | **15.1 ms** |
+| `re` alternation | 4.53 ms | 6,347 ms |
+| `str.count` loop | — | 1,767 ms |
 
 Two things worth reading off these numbers honestly:
 
-- **At ten patterns there is no win at all.** Python's `str.count` is C with a
-  good substring search, and it ties. If your pattern count is small, do not
-  reach for an extension — the crossover is somewhere around a hundred patterns.
+- **At ten patterns the win is 1.5x**, which is not worth an extension. Python's
+  `str.count` is C with a good substring search. If your pattern count is small,
+  do not reach for C++ — the case only becomes compelling in the hundreds.
 - **Building the automaton is as cheap as compiling the equivalent regex**, so
   the setup cost is not a hidden tax; the entire difference is in the scan.
 
 Regex alternation is the *slowest* option despite being the clever-looking one:
 the engine backtracks across thousands of alternatives at every position.
+
+### What the profiler actually said
+
+The first version used `std::lower_bound` to find a node's child. `perf record`
+put **83% of all cycles in that one function**, and `perf stat` explained why:
+
+| | instructions | branches | branch-misses | IPC |
+| --- | --- | --- | --- | --- |
+| `std::lower_bound` | 4.49B | 1.02B | 98.4M (**9.63%**) | 0.84 |
+| linear scan | 3.59B | 1.40B | 58.7M (**4.18%**) | 0.82 |
+
+The linear scan executes *more* branches and is still ~20% faster overall,
+because a binary search branches on data the predictor cannot learn. Child lists
+are short, so the loop is both fewer instructions and vastly more predictable.
+
+Three things were measured and **rejected**:
+
+- **`[[likely]]` / `[[unlikely]]` on the transition function: ~1%, inside noise.**
+  The mispredictions were in a data-dependent search, and no hint can help a
+  branch that genuinely goes both ways. Changing the algorithm fixed it; annotating
+  it would not have. This is the trap the attributes invite.
+- **`__attribute__((always_inline))` on `child`: no measurable gain** over simply
+  defining it in the header and letting the compiler decide. The attribute was
+  compiler-specific clutter buying 0.4%.
+- **A dense 256-entry root transition table: no gain at all** once the linear scan
+  was in (14.79 ms vs 14.79 ms). It looked obviously worthwhile beforehand.
+
+The lesson worth taking from this file is the order of operations: profile,
+change the algorithm, and reach for hints and attributes last — if ever.
+
 
 ## Deliberate omissions
 
@@ -220,11 +250,10 @@ Left out on purpose, each marked with a comment where it would go:
   the build is environment-independent, which is the part worth having.
 - **`STABLE_ABI`.** One wheel for all of Python 3.12+, at a small performance
   cost. Noted in `CMakeLists.txt`; not useful until you actually ship wheels.
-- **A dense 256-entry goto table per state.** Faster scanning, but 1 KB per state
-  runs to hundreds of megabytes at realistic pattern counts. Children are kept in
-  a sorted vector and binary-searched instead. (Doing it for the *root only* is
-  cheap and would help, since the root is the hottest state — but it is an
-  optimisation, and this is a demo.)
+- **A dense 256-entry goto table per state.** 1 KB per state runs to hundreds of
+  megabytes at realistic pattern counts. Doing it for the *root only* is cheap and
+  looked obviously worthwhile — but measured at exactly break-even once children
+  were scanned linearly, so it is not here.
 - **A flattened CSR node layout.** Each `Node` holds two `std::vector`s, so
   traversal chases pointers. Packing all children into one array with per-node
   offsets would cut the cache misses that dominate the 10,000-pattern case. It
