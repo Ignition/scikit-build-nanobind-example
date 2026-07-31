@@ -1,12 +1,8 @@
-// Implementation of the aho_corasick module.
+// A module implementation unit: it names the module without exporting, so it
+// sees the interface's private members while contributing nothing to the
+// compiled interface. Editing this file recompiles only this file.
 //
-// A module implementation unit: it names the module without exporting, so it can
-// see everything the interface declares, including the private members, while
-// nothing here becomes part of the compiled interface. Editing this file
-// recompiles only this file.
-//
-// The interface's global module fragment is not inherited, so the standard
-// library headers this file needs are included again below.
+// The interface's global module fragment is not inherited, hence the includes.
 
 module;
 
@@ -36,9 +32,9 @@ void PatternMatcher::scan(std::string_view text, OnMatch on_match) const {
     for (std::size_t i = 0; i < text.size(); ++i) {
         const auto byte = static_cast<std::uint8_t>(text[i]);
 
-        // In UTF-8 exactly the continuation bytes look like 10xxxxxx, so anything
-        // else starts a new code point. Counting them as we go is close to free,
-        // and a match can only ever end on a character boundary.
+        // Only continuation bytes look like 10xxxxxx, so anything else starts a
+        // code point. Counting as we go is near-free, and a match can only end on
+        // a character boundary.
         if ((byte & 0xC0) != 0x80) {
             ++chars;
         }
@@ -67,9 +63,9 @@ std::size_t count_code_points(std::string_view text) noexcept {
 }  // namespace
 
 std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const noexcept {
-    // One child() lookup per iteration. Testing the transition in the loop
-    // condition and then repeating it to get the result would do the work twice
-    // for every byte that does match, which is most of them.
+    // One child() lookup per iteration: testing the transition in the loop
+    // condition and repeating it for the result would do the work twice for every
+    // byte that matches, which is most of them.
     for (;;) {
         const std::int32_t next = child(state, byte);
         if (next >= 0) {
@@ -83,8 +79,8 @@ std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const n
 }
 
 PatternMatcher::PatternMatcher(std::span<const std::string> patterns) {
-    // std::transform_reduce, unlike the ranges algorithms, invokes its callable
-    // with () rather than std::invoke, so a pointer-to-member will not do here.
+    // transform_reduce invokes with () rather than std::invoke, unlike the ranges
+    // algorithms, so a pointer-to-member will not do here.
     const std::size_t total_bytes =
         std::transform_reduce(patterns.begin(), patterns.end(), std::size_t{0}, std::plus{},
                               [](const std::string& pattern) { return pattern.size(); });
@@ -109,15 +105,15 @@ PatternMatcher::PatternMatcher(std::span<const std::string> patterns) {
                 next = static_cast<std::int32_t>(nodes_.size());
                 nodes_.emplace_back();
                 auto& children = node(state).children;
-                // Projection instead of a comparator lambda: compare on the byte,
-                // keeping children sorted so child() can stop early.
+                // Projection rather than a comparator: keeps children sorted by
+                // byte so child() can stop early.
                 const auto at = std::ranges::lower_bound(children, byte, {}, &Child::first);
                 children.insert(at, {byte, next});
             }
             state = next;
         }
         // Duplicate patterns land on the same node; both indices are recorded so
-        // find_all can report each one the caller asked about.
+        // find_all reports each registration.
         node(state).outputs.push_back(index);
     }
 
@@ -139,8 +135,8 @@ void PatternMatcher::build_failure_links() {
         const std::int32_t state = queue.front();
         queue.pop_front();
 
-        // No node is added here, the trie is complete before this runs, so a
-        // reference is safe and avoids copying a vector per state.
+        // The trie is complete before this runs, so a reference is safe and
+        // avoids copying a vector per state.
         const auto& children = node(state).children;
         for (const auto& [byte, next] : children) {
             std::int32_t fail = node(state).fail;

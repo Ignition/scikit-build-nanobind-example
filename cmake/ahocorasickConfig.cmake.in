@@ -1,13 +1,10 @@
 @PACKAGE_INIT@
 
-# What a consumer gets from find_package(ahocorasick): the imported target
-# ahocorasick::core, carrying the module interface unit as source along with the
-# include directory and compile definitions needed to build it.
+# Provides ahocorasick::core, carrying the module interface unit as source with
+# the include directory and definitions needed to compile it.
 #
-# There is no find_dependency call because the algorithm has no dependencies. If
-# one is ever added - see the seam comment in CMakeLists.txt - it belongs here,
-# or a consumer's configure fails on a target this file references but never
-# defines.
+# No find_dependency call, because the algorithm has no dependencies. One added
+# later belongs here, or a consumer's configure fails on an undefined target.
 include("${CMAKE_CURRENT_LIST_DIR}/ahocorasickTargets.cmake")
 
 check_required_components(ahocorasick)

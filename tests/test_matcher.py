@@ -6,8 +6,7 @@ from hypothesis import strategies as st
 
 from ahocorasick_demo import PatternMatcher
 
-# A small alphabet makes collisions, overlaps, and nested patterns common, which
-# is exactly where an automaton is easy to get wrong.
+# A small alphabet makes overlaps and nesting common, where automata go wrong.
 small_alphabet = st.text(alphabet="abc", min_size=1, max_size=6)
 pattern_lists = st.lists(small_alphabet, min_size=1, max_size=8, unique=True)
 texts = st.text(alphabet="abc", max_size=60)
@@ -25,27 +24,21 @@ def reference_find_all(patterns, text):
 
 # --- Core behaviour ----------------------------------------------------------
 #
-# The fixed-case core behaviour - overlaps, nesting, counting, state counts, the
-# empty pattern list, repeated patterns - lives in tests/test_matcher.cpp. It
-# needs no interpreter to state, and stating it in C++ means a failure points at
-# the algorithm rather than arriving through the binding layer.
-#
-# What stays here is what genuinely exercises the whole stack: the binding
-# layer's own behaviour, and the property tests against a brute-force oracle.
+# Fixed-case algorithm behaviour lives in tests/test_matcher.cpp, where a failure
+# points at the algorithm rather than arriving through the binding layer. What
+# stays here exercises the whole stack.
 
 
 def test_rejects_empty_patterns():
-    # An empty pattern matches everywhere, which is never what a caller means.
-    # The C++ suite pins the exception *type*; this pins nanobind's translation
-    # of it into ValueError, which is the part Python callers depend on.
+    # The C++ suite pins the exception type; this pins nanobind's translation of
+    # it into ValueError, which is what Python callers depend on.
     with pytest.raises(ValueError, match="empty"):
         PatternMatcher(["ok", ""])
 
 
 def test_dunder_len_and_repr_are_wired_to_the_automaton():
-    # These two have no C++ counterpart to move to: __len__ and __repr__ are
-    # defined in bindings.cpp, so the mapping from num_patterns/num_states onto
-    # Python's protocols is only observable from here.
+    # Defined in bindings.cpp, so the mapping of num_patterns and num_states onto
+    # Python's protocols is only observable here.
     matcher = PatternMatcher(["he", "she", "hers"])
 
     assert len(matcher) == 3
@@ -64,8 +57,7 @@ def test_str_and_bytes_patterns_are_interchangeable():
 
 
 def test_str_offsets_are_code_points_not_bytes():
-    # "é" is two bytes in UTF-8. Reporting byte offsets for str input would
-    # disagree with every offset Python itself produces.
+    # Byte offsets for str input would disagree with every offset Python produces.
     text = "café bar"
     matcher = PatternMatcher(["bar"])
 
@@ -116,7 +108,7 @@ def test_matches_agrees_with_count(patterns, text):
 def test_str_and_bytes_scanning_find_the_same_occurrences(patterns, text):
     matcher = PatternMatcher(patterns)
 
-    # ASCII-only here, so code point offsets and byte offsets coincide.
+    # ASCII-only, so code point and byte offsets coincide.
     assert matcher.find_all(text) == matcher.find_all(text.encode())
 
 
@@ -135,8 +127,7 @@ def test_pickle_round_trips(patterns, text):
 
 
 def test_handles_patterns_that_are_not_valid_utf8():
-    # Arbitrary binary is a legitimate pattern: the matcher works on bytes, and
-    # nothing should try to decode them as text on the way in or out.
+    # The matcher works on bytes; nothing should decode them in either direction.
     matcher = PatternMatcher([b"\xff\xfe", b"\x00\x01"])
 
     assert matcher.patterns == [b"\xff\xfe", b"\x00\x01"]
@@ -147,8 +138,7 @@ def test_handles_patterns_that_are_not_valid_utf8():
 
 
 def test_pickle_carries_patterns_not_the_trie():
-    # The automaton is rebuilt on load: deterministic, and far simpler than
-    # serialising failure links. Cheap because construction is the only cost.
+    # Rebuilt on load: deterministic, and simpler than serialising failure links.
     matcher = PatternMatcher(["he", "she", "hers"])
 
     blob = pickle.dumps(matcher)

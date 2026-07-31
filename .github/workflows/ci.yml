@@ -5,20 +5,17 @@ on:
     branches: [main]
   pull_request:
 
-# The algorithm is a C++20 module, so every job needs a compiler that can report
-# its import graph. CXX is set explicitly rather than relying on the system
-# default: scikit-build-core takes the compiler from the interpreter's own build
-# configuration, which on Ubuntu is the triplet-prefixed name and stays on the
-# distribution's older GCC even after update-alternatives switches g++.
+# Set explicitly rather than relying on the system default: scikit-build-core
+# takes the compiler from the interpreter's build configuration, which on Ubuntu
+# is a triplet-prefixed name that update-alternatives leaves on the older GCC.
 env:
   CXX: g++-14
   CC: gcc-14
 
 jobs:
   test:
-    # The point of this job is not "the tests pass" - they passed locally. It is
-    # that the build works on a machine that is not the developer's, across the
-    # Python range the package advertises in `requires-python`.
+    # Not "the tests pass" - they passed locally - but that the build works on a
+    # machine that is not the developer's, across the advertised Python range.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -37,27 +34,21 @@ jobs:
 
       - name: Build and install
         # Build isolation left on, unlike the local dev loop: this must prove the
-        # declared build dependencies are sufficient on their own. CMake and Ninja
-        # come from scikit-build-core's own requirements when absent from the image.
+        # declared build dependencies are sufficient on their own.
         #
-        # Deliberately not ccache'd, unlike cpp-tests and minimum-cmake. Build
-        # isolation means pip builds in a fresh environment every time, so most of
-        # this job is resolving and downloading dependencies rather than
-        # compiling; caching the compile bought nothing measurable and cost a
-        # cache restore and save on every run.
+        # Not ccache'd, unlike cpp-tests and minimum-cmake. Isolation means pip
+        # builds in a fresh environment every time, so most of this job resolves
+        # and downloads rather than compiles, and caching bought nothing.
         run: python -m pip install ".[test]" --verbose
 
       - name: Test
-        # Run from the repo root so pytest finds tests/, while `ahocorasick_demo`
-        # still resolves to the installed wheel - that is exactly what the src/
-        # layout buys us, and tests/test_package_layout.py asserts it.
-        # Benchmarks are skipped by addopts already; repeated here so the intent
-        # survives an edit to pyproject.toml.
+        # From the repo root, so pytest finds tests/ while `ahocorasick_demo`
+        # resolves to the installed wheel. Benchmarks are already skipped by
+        # addopts; repeated so the intent survives an edit to pyproject.toml.
         run: python -m pytest -v --benchmark-skip
 
       - name: Check compile_commands.json was generated
-        # Tooling (clangd, clang-tidy) depends on it, so it is worth noticing if
-        # it silently stops appearing.
+        # clangd and clang-tidy depend on it, so notice if it stops appearing.
         run: test -f build/*/compile_commands.json
 
       - name: Check the generated stub shipped
@@ -72,15 +63,12 @@ jobs:
           EOF
 
   standalone-library:
-    # Proves the claim the layout is built on: the algorithm compiles with no
-    # Python, no nanobind, and no scikit-build-core anywhere in sight. If someone
-    # leaks a nanobind include into the module, this job is what catches it.
+    # The claim the layout is built on: the algorithm compiles with no Python, no
+    # nanobind and no scikit-build-core. A leaked nanobind include fails here.
     #
-    # Tests are turned off explicitly. They default ON for a bare `cmake`, and
-    # fetching Catch2 would need the network - which would quietly weaken this
-    # job from "builds with nothing installed" to "builds with nothing installed
-    # except a test framework downloaded mid-configure". Running the tests is the
-    # cpp-tests job's business; this one asserts the dependency-free claim.
+    # Tests off explicitly. They default ON for a bare `cmake`, and fetching
+    # Catch2 needs the network, which would weaken this from "builds with nothing
+    # installed" to "builds with nothing but a framework downloaded on the way".
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -99,11 +87,10 @@ jobs:
           ! ls build-standalone/_core*.so 2>/dev/null
 
   cpp-tests:
-    # The algorithm's own test suite, run without Python present. Both link modes
-    # matter and for different reasons: the static build is what wheels use, and
-    # the shared build is the only configuration that actually links a consumer
-    # against the library - which is what turns a missing AHOCORASICK_EXPORT into
-    # a build failure here rather than a surprise in somebody else's project.
+    # The algorithm's own suite, without Python. Both link modes for different
+    # reasons: static is what wheels use, and shared is the only configuration
+    # that links a consumer - which turns a missing AHOCORASICK_EXPORT into a
+    # failure here rather than in somebody else's project.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -120,11 +107,10 @@ jobs:
         run: sudo apt-get install -y g++-14 ccache
 
       - name: Restore the compiler cache
-        # Catch2 is ~100 of the ~110 translation units here and never changes.
-        # The three that do change are the module units, which ccache declines
-        # to cache at all - it does not support the module-scanning flags and
-        # says so rather than risking a wrong answer. That is the right split:
-        # the unchanging bulk is cached, the files under development are not.
+        # Catch2 is nearly every translation unit here and never changes. The
+        # module units are the exception, and ccache declines them rather than
+        # risk a wrong answer under the module-scanning flags - which splits it
+        # exactly right: the unchanging bulk cached, the live files not.
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -139,23 +125,19 @@ jobs:
           cmake --build build-cpp
 
       - name: Report cache effectiveness
-        # A cache nobody measures is a guess. Expect ~0% on the first run for a
-        # given key and close to 100% of cacheable calls afterwards; a hit rate
-        # that quietly falls to zero means the key or the flags changed.
+        # A cache nobody measures is a guess. Near zero on a key's first run,
+        # near total afterwards; a rate that falls back to zero means the key or
+        # the compile flags changed.
         run: ccache -s
 
       - name: Test
         run: ctest --test-dir build-cpp --output-on-failure
 
   installed-package:
-    # The second consumer of the algorithm/bindings seam, and the one that proves
-    # the library is reusable rather than merely separable: a project that has
-    # never seen this source tree finds it with find_package and imports the
-    # module. Both link modes, because the export macro only matters in one.
-    #
-    # An installed C++20 module ships as source, so this also checks that the
-    # generated export header and the static define reach a consumer that
-    # compiles the interface unit itself.
+    # Proves the library is reusable rather than merely separable: a project that
+    # has never seen this tree finds it and imports the module. An installed
+    # module ships as source, so this also checks the generated export header and
+    # the static define reach a consumer that compiles the interface itself.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -211,8 +193,8 @@ jobs:
           LD_LIBRARY_PATH="$PWD/prefix/lib" ./consumer/build/consumer
 
       - name: Assert the package rejects an incompatible version
-        # SOVERSION and the package version share one root (project(VERSION)), so
-        # this also pins that they cannot drift apart.
+        # SOVERSION and the package version share one root, so this pins that
+        # they cannot drift apart.
         run: |
           sed -i 's/ahocorasick 0.1 REQUIRED/ahocorasick 9.0 REQUIRED/' consumer/CMakeLists.txt
           if cmake -S consumer -B consumer/build-ver -G Ninja \
@@ -223,9 +205,8 @@ jobs:
           grep -q "compatible with requested version" err.txt
 
   minimum-cmake:
-    # cmake_minimum_required declares 3.28, the release where FILE_SET
-    # CXX_MODULES arrived. A floor nobody configures against is a guess, so this
-    # job makes it a tested claim.
+    # A floor nobody configures against is a guess, so 3.28 is tested rather
+    # than declared.
     runs-on: ubuntu-24.04
 
     env:
@@ -263,11 +244,9 @@ jobs:
         run: ccache -s
 
   rejects-bad-generator:
-    # The other half of what the module probe checks. Only Ninja and Visual
-    # Studio scan for modules, and Makefiles is CMake's default on Unix - so
-    # `cmake -B build` with no -G fails on a perfectly capable compiler. That was
-    # once an opaque CMake error; this job asserts it is now a diagnostic naming
-    # the generator and the fix.
+    # The other half of what the probe checks. Makefiles is CMake's default on
+    # Unix and does not scan, so `cmake -B build` with no -G fails on a perfectly
+    # capable compiler - with a diagnostic naming the generator and the fix.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -287,10 +266,9 @@ jobs:
           grep -q "\-G Ninja" err.txt
 
   rejects-old-compiler:
-    # The build fails on a compiler that cannot scan for modules. That is a
-    # supported outcome rather than a crash, so the diagnostic is worth testing:
-    # it has to name the compiler it actually found, because the usual cause is
-    # picking up a different one than expected.
+    # Failing on a compiler that cannot scan modules is a supported outcome, so
+    # the diagnostic is worth testing: it must name the compiler it found,
+    # because the usual cause is picking up a different one than expected.
     runs-on: ubuntu-24.04
     env:
       CXX: g++-13

@@ -1,8 +1,6 @@
-// The Python binding layer, and nothing else.
-//
-// Every Python concern lives here: overload resolution, converting iterables,
-// pickling, docstrings. The `aho_corasick` module stays a plain C++ library that
-// could be linked into a program that has never heard of Python.
+// The Python binding layer, and nothing else: overload resolution, iterable
+// conversion, pickling, docstrings. The aho_corasick module stays a plain C++
+// library that could link into a program that has never heard of Python.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/pair.h>
@@ -29,8 +27,8 @@ std::string_view view_of(const nb::bytes& value) {
     return {value.c_str(), value.size()};
 }
 
-// Patterns arrive as an arbitrary iterable of str or bytes. `str` is encoded to
-// UTF-8, so a pattern registered as "café" matches text given either way.
+// str is encoded to UTF-8, so a pattern registered either way matches text given
+// either way.
 std::vector<std::string> collect_patterns(const nb::iterable& items) {
     std::vector<std::string> patterns;
     for (nb::handle item : items) {
@@ -65,12 +63,11 @@ std::vector<nb::bytes> patterns_as_bytes(const PatternMatcher& matcher) {
     return out;
 }
 
-// Rebuilding from the pattern list is far simpler than serialising the trie, and
-// the automaton is deterministic, so the reconstruction is exact.
+// Rebuilding from the pattern list is simpler than serialising the trie, and the
+// automaton is deterministic, so reconstruction is exact.
 //
-// nb::bytes, not std::string: nanobind maps std::string to Python `str`, which
-// UTF-8 decodes. Patterns are arbitrary binary, so that would raise
-// UnicodeDecodeError on any pattern that is not valid UTF-8.
+// nb::bytes, not std::string: nanobind maps std::string to Python str, which
+// decodes as UTF-8 and would raise on patterns that are arbitrary binary.
 using State = std::tuple<std::vector<nb::bytes>>;
 
 }  // namespace
@@ -84,8 +81,8 @@ NB_MODULE(_core, m) {
     matcher.def(
         "__init__",
         [](PatternMatcher* self, const nb::iterable& patterns) {
-            // Placement-new because the automaton is built from a converted
-            // vector rather than from the Python object directly.
+            // Placement-new: the automaton is built from a converted vector
+            // rather than from the Python object directly.
             new (self) PatternMatcher(collect_patterns(patterns));
         },
         "patterns"_a,
@@ -93,9 +90,8 @@ NB_MODULE(_core, m) {
         "scanning afterwards costs the same no matter how many patterns there are. "
         "Raises ValueError if any pattern is empty.");
 
-    // bytes before str in every overload pair: registration order is the order
-    // nanobind tries, and bytes is the exact match we want rather than letting it
-    // fall through to a str conversion.
+    // bytes before str in every pair: registration order is the order nanobind
+    // tries, and bytes is the exact match rather than a str conversion.
     matcher.def("matches",
                 [](const PatternMatcher& self, const nb::bytes& text) {
                     return self.matches(view_of(text));
@@ -139,9 +135,8 @@ NB_MODULE(_core, m) {
                         "States in the automaton — its memory footprint in practice.");
     matcher.def_prop_ro(
         "patterns", &patterns_as_bytes,
-        // Returned as bytes: str patterns were encoded to UTF-8 on the way in,
-        // and inventing a decode on the way out would fail outright on any
-        // pattern that is not valid UTF-8.
+        // bytes, because str patterns were encoded on the way in and a decode on
+        // the way out would fail on any pattern that is not valid UTF-8.
         "The registered patterns, as bytes, in their original order.");
 
     matcher.def("__repr__", [](const PatternMatcher& self) {
