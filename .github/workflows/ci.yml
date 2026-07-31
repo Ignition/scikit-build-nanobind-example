@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # The point of this job is not "the tests pass" — they passed locally. It is
+    # that the build works on a machine that is not the developer's, across the
+    # Python range the package advertises in `requires-python`.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build and install
+        # Build isolation left on, unlike the local dev loop: this must prove the
+        # declared build dependencies are sufficient on their own. CMake and Ninja
+        # come from scikit-build-core's own requirements when absent from the image.
+        run: python -m pip install ".[test]" --verbose
+
+      - name: Test
+        # Run from the repo root so pytest finds tests/, while `bloomdemo` still
+        # resolves to the installed wheel — that is exactly what the src/ layout
+        # buys us, and tests/test_package_layout.py asserts it.
+        # Benchmarks are skipped by addopts already; repeated here so the intent
+        # survives an edit to pyproject.toml.
+        run: python -m pytest -v --benchmark-skip
+
+      - name: Check the generated stub shipped
+        run: |
+          python - <<'EOF'
+          import pathlib
+          from bloomdemo import _core
+          stub = pathlib.Path(_core.__file__).parent / "_core.pyi"
+          assert stub.is_file(), "nanobind_add_stub did not install _core.pyi"
+          assert "class BloomFilter" in stub.read_text()
+          print(stub.read_text())
+          EOF
