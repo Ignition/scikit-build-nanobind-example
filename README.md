@@ -21,7 +21,8 @@ approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 | --- | --- |
 | Backend wiring, dependency pinning, editable rebuilds | `pyproject.toml` |
 | Finding Python and nanobind, install rules, per-target flags | `CMakeLists.txt` |
-| **Algorithm with no knowledge of Python** | `src/aho_corasick.{hpp,cpp}` |
+| **A C++20 module in a `FILE_SET CXX_MODULES`** | `CMakeLists.txt` |
+| **Algorithm with no knowledge of Python** | `src/aho_corasick.cppm` |
 | **Bindings, and nothing else** | `src/bindings.cpp` |
 | Overload resolution (`str` and `bytes`) | `matches` / `count` / `find_all` |
 | Converting an arbitrary Python iterable | `collect_patterns` |
@@ -35,10 +36,16 @@ approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 The algorithm and the bindings are separate build targets:
 
 ```
-src/aho_corasick.hpp   pure C++20 — no nanobind include anywhere
-src/aho_corasick.cpp   builds the `aho_corasick` static library
+src/aho_corasick.cppm  a C++20 module — no nanobind include anywhere
 src/bindings.cpp       the only file containing NB_MODULE
 ```
+
+The algorithm is a C++20 module rather than a header and source pair, so the
+boundary is enforced by the language and not only by convention: an importer
+sees the exported class and nothing else. The trie node type, the transition
+function, and the traversal are genuinely private, which a header cannot
+express. `bindings.cpp` reaches it with `import aho_corasick;` while still
+including nanobind's headers in the same file, which mixes cleanly.
 
 `aho_corasick` compiles, links, and can be unit-tested without Python existing —
 and that is enforced by the build, not merely intended:
@@ -46,6 +53,31 @@ and that is enforced by the build, not merely intended:
 ```bash
 cmake -S . -B build-standalone -G Ninja   # no Python, no nanobind, no pip
 cmake --build build-standalone            # -> libaho_corasick.a
+```
+
+## Toolchain requirements
+
+Modules are not free. This project needs:
+
+| | Required | Why |
+| --- | --- | --- |
+| CMake | **3.28+** | `FILE_SET CXX_MODULES` |
+| Compiler | **GCC 14+, Clang 16+, MSVC 19.34+** | must be able to report its own import graph |
+| Generator | **Ninja or Visual Studio** | the only ones that scan for modules |
+
+There is no header-based fallback. On an older compiler the build stops at
+configure time with a message naming the compiler it found, and a CI job asserts
+that it does.
+
+**The gotcha worth knowing.** scikit-build-core takes the compiler from the
+interpreter's own build configuration, not from your shell. On Debian and Ubuntu
+that is the triplet-prefixed name, `x86_64-linux-gnu-g++`, which is a *different
+symlink* from `g++` and stays on the distribution's older GCC even after
+`update-alternatives` switches the default. So `cmake` can succeed while
+`pip install` fails on the same machine. Set the compiler explicitly:
+
+```bash
+CXX=g++-14 pip install -e ".[test]" --no-build-isolation
 ```
 
 `find_package(Python)` and the nanobind probe live behind
@@ -85,12 +117,13 @@ The choices worth knowing about before you copy this:
 | Trie children | Sorted vector, linear scan | Measured: 20% fewer instructions and 40% fewer branch mispredicts than binary search |
 | Tests | pytest + Hypothesis against a brute-force oracle | The oracle is obviously correct; the automaton is not |
 | Stubs | `nanobind_add_stub` at build time | Cannot drift from the bindings; the fiddly bit worth recording |
+| Algorithm form | A C++20 module | The privacy boundary is enforced by the language, not by convention |
 | C++ standard | C++20 | `std::span`, the ranges algorithms and their projections |
 | Free-threading | On | No mutable module state, and a matcher is immutable once built |
 | Benchmarks | Record-only, skipped in CI | Numbers on demand; CI stays a pure correctness gate |
 | Version | `pyproject.toml` → CMake → C++ | One source of truth via `SKBUILD_PROJECT_VERSION` |
 | Python range | `>=3.9`, CI on 3.9 / 3.12 / 3.13 | Claim only what is tested |
-| CMake floor | 3.18, pinned in a CI job | Same rule: a floor nobody configures against is a guess |
+| CMake floor | 3.28, pinned in a CI job | `FILE_SET CXX_MODULES` needs it; a floor nobody configures against is a guess |
 | Optimisation flags | Left to `CMAKE_BUILD_TYPE` | Hardcoded `-O3` is redundant in Release and breaks Debug |
 | Symbol visibility | Hidden on the library too | Otherwise the static library's symbols leak out of the module |
 
@@ -98,7 +131,7 @@ The choices worth knowing about before you copy this:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e ".[test]" --no-build-isolation
+CXX=g++-14 .venv/bin/python -m pip install -e ".[test]" --no-build-isolation
 .venv/bin/python -m pytest
 ```
 
@@ -270,10 +303,16 @@ Left out on purpose, each marked with a comment where it would go:
   without Python — but the Python property tests cover the algorithm fully, and
   adding CTest means a second test runner in a project whose point is one clean
   build path.
-- **`cibuildwheel`.** Config sits commented in `pyproject.toml`. CI here proves
-  the build is environment-independent, which is the part worth having.
+- **`cibuildwheel`.** Config sits commented in `pyproject.toml`, and as written it
+  would not work: the manylinux images ship compilers too old to scan for
+  modules. Shipping wheels from this template means either building a newer
+  toolchain into the image or giving up modules. CI here proves the build is
+  environment-independent, which is the part worth having.
 - **`STABLE_ABI`.** One wheel for all of Python 3.12+, at a small performance
   cost. Noted in `CMakeLists.txt`; not useful until you actually ship wheels.
+- **`import std`.** Standard library headers go in the global module fragment
+  instead. `import std` needs a newer toolchain than this project already asks
+  for, and is still behind an experimental gate in CMake.
 - **A dense 256-entry goto table per state.** 1 KB per state runs to hundreds of
   megabytes at realistic pattern counts. Doing it for the *root only* is cheap and
   looked obviously worthwhile — but measured at exactly break-even once children

@@ -1,7 +1,11 @@
-# Minimum raised to 3.18 so `Development.Module` exists unconditionally, and
-# pinned in CI (see .github/workflows/ci.yml) — a floor you never configure
-# against is a guess, not a guarantee.
-cmake_minimum_required(VERSION 3.18...3.31)
+# 3.28 is where FILE_SET CXX_MODULES arrived, and the algorithm is a C++20
+# module, so that is the floor. Pinned in CI: a floor you never configure against
+# is a guess, not a guarantee.
+#
+# Module scanning also requires a compiler that can report its own import graph.
+# That means GCC 14, Clang 16, or MSVC 19.34 and up, and either the Ninja or the
+# Visual Studio generator. There is no fallback path; see README.
+cmake_minimum_required(VERSION 3.28...3.31)
 
 # SKBUILD_PROJECT_VERSION is only defined when scikit-build-core drives the
 # build. The whole point of splitting the algorithm out is that CMake can be run
@@ -11,6 +15,26 @@ if(NOT DEFINED SKBUILD_PROJECT_VERSION)
 endif()
 
 project(ahocorasick_demo VERSION 0.1.0 LANGUAGES CXX)
+
+# Fail with something actionable. CMake's own diagnostic says only that the
+# compiler cannot report its import graph, which sends people looking for a CMake
+# problem. The usual cause is subtler: scikit-build-core takes the compiler from
+# the interpreter's own build configuration, so `pip install` can pick a
+# different and older compiler than `cmake` does on the same machine. On Debian
+# and Ubuntu that is the triplet-prefixed name, which update-alternatives leaves
+# alone when you switch the default.
+set(_ahocorasick_min_compiler "GCC 14, Clang 16, or MSVC 19.34")
+if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14) OR
+   (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16) OR
+   (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19.34))
+    message(FATAL_ERROR
+            "The algorithm is a C++20 module, which needs a compiler that can "
+            "report its import graph: ${_ahocorasick_min_compiler} or newer.\n"
+            "Configuring with ${CMAKE_CXX_COMPILER_ID} "
+            "${CMAKE_CXX_COMPILER_VERSION} at ${CMAKE_CXX_COMPILER}.\n"
+            "If that path is not the compiler you expect, set CXX and configure "
+            "again, for example CXX=g++-14 pip install -e .")
+endif()
 
 # Defaults ON under scikit-build-core and OFF for a bare `cmake -B build`, so the
 # claim that the algorithm builds without Python is actually true rather than
@@ -44,13 +68,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # unit-tested with a C++ framework, linked into a non-Python program, or handed
 # to someone who does not care about bindings at all. Keeping this boundary
 # honest is easier when the build enforces it.
-add_library(aho_corasick STATIC src/aho_corasick.cpp)
+add_library(aho_corasick STATIC)
 add_library(ahocorasick::core ALIAS aho_corasick)
 
-# BUILD_INTERFACE so the path is not baked into any future exported config, and
-# absolute because relative include directories are a portability trap.
-target_include_directories(aho_corasick
-                           PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+# The module interface unit goes in a CXX_MODULES file set rather than being
+# listed as an ordinary source. That is what lets CMake scan it, work out the
+# import graph, and order the build so importers compile after it.
+target_sources(aho_corasick
+               PUBLIC FILE_SET CXX_MODULES
+                      BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
+                      FILES src/aho_corasick.cppm)
+
+# No include directory: consumers reach this library by importing it, not by
+# finding a header.
 target_compile_features(aho_corasick PUBLIC cxx_std_20)
 
 set_target_properties(aho_corasick PROPERTIES
@@ -110,12 +140,16 @@ find_package(nanobind CONFIG REQUIRED)
 #   the GIL and says so on Python 3.13+ free-threaded builds. Inert on 3.12 and
 #   below. A PatternMatcher is immutable after construction, so sharing one
 #   across threads is safe; see README.
-# NOMINSIZE is deliberately not set. nanobind's default -Os applies only to this
-#   target, where nothing measurable happens — the algorithm above is a separate
-#   target and keeps the build type's own optimisation level.
+# NOMINSIZE is required, and not for the reason it usually is. nanobind
+#   otherwise compiles this target at -Os, and GCC 14 cannot compile a translation
+#   unit that imports a module at that optimisation level: it fails to emit the
+#   body of an always_inline standard library function reached through the
+#   module's global module fragment. Every other level is fine, so this asks for
+#   the build type's own optimisation instead. Nothing here is hot enough for the
+#   choice to matter on speed.
 # STABLE_ABI would yield one wheel for all of Python 3.12+ at some performance
 #   cost. Not used: this template does not build multi-version wheels.
-nanobind_add_module(_core FREE_THREADED src/bindings.cpp)
+nanobind_add_module(_core FREE_THREADED NOMINSIZE src/bindings.cpp)
 target_link_libraries(_core PRIVATE ahocorasick::core)
 target_compile_definitions(_core PRIVATE
                            AHOCORASICK_DEMO_VERSION="${SKBUILD_PROJECT_VERSION}")

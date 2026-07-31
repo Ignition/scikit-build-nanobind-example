@@ -38,8 +38,9 @@ testpaths = ["tests"]
 addopts = "--benchmark-skip"
 
 # --- Seam: publishing wheels -------------------------------------------------
-# Deliberately not configured (see IMPLEMENTATION_PLAN.md). If this template ever
-# needs real multi-platform wheels, enable STABLE_ABI in CMakeLists.txt and add:
+# Deliberately not configured, and it would not work as written: the manylinux
+# images ship compilers too old to scan for C++20 modules, so a wheel build needs
+# a newer toolchain in the image first. Kept for the shape of the config:
 #
 # [tool.cibuildwheel]
 # build = "cp39-* cp312-* cp313-*"

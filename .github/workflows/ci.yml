@@ -5,12 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+# The algorithm is a C++20 module, so every job needs a compiler that can report
+# its import graph. CXX is set explicitly rather than relying on the system
+# default: scikit-build-core takes the compiler from the interpreter's own build
+# configuration, which on Ubuntu is the triplet-prefixed name and stays on the
+# distribution's older GCC even after update-alternatives switches g++.
+env:
+  CXX: g++-14
+  CC: gcc-14
+
 jobs:
   test:
-    # The point of this job is not "the tests pass" — they passed locally. It is
+    # The point of this job is not "the tests pass" - they passed locally. It is
     # that the build works on a machine that is not the developer's, across the
     # Python range the package advertises in `requires-python`.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +32,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
+
       - name: Build and install
         # Build isolation left on, unlike the local dev loop: this must prove the
         # declared build dependencies are sufficient on their own. CMake and Ninja
@@ -30,9 +42,9 @@ jobs:
         run: python -m pip install ".[test]" --verbose
 
       - name: Test
-        # Run from the repo root so pytest finds tests/, while `ahocorasick_demo` still
-        # resolves to the installed wheel — that is exactly what the src/ layout
-        # buys us, and tests/test_package_layout.py asserts it.
+        # Run from the repo root so pytest finds tests/, while `ahocorasick_demo`
+        # still resolves to the installed wheel - that is exactly what the src/
+        # layout buys us, and tests/test_package_layout.py asserts it.
         # Benchmarks are skipped by addopts already; repeated here so the intent
         # survives an edit to pyproject.toml.
         run: python -m pytest -v --benchmark-skip
@@ -56,10 +68,13 @@ jobs:
   standalone-library:
     # Proves the claim the layout is built on: the algorithm compiles with no
     # Python, no nanobind, and no scikit-build-core anywhere in sight. If someone
-    # leaks a nanobind include into aho_corasick.cpp, this job is what catches it.
-    runs-on: ubuntu-latest
+    # leaks a nanobind include into the module, this job is what catches it.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
 
       - name: Configure and build the library alone
         run: |
@@ -72,9 +87,10 @@ jobs:
           ! ls build-standalone/_core*.so 2>/dev/null
 
   minimum-cmake:
-    # cmake_minimum_required declares 3.18; a floor nobody configures against is
-    # a guess. This job makes it a tested claim.
-    runs-on: ubuntu-latest
+    # cmake_minimum_required declares 3.28, the release where FILE_SET
+    # CXX_MODULES arrived. A floor nobody configures against is a guess, so this
+    # job makes it a tested claim.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -82,8 +98,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
+
       - name: Install the declared minimum CMake and nanobind
-        run: python -m pip install "cmake==3.18.*" ninja nanobind
+        run: python -m pip install "cmake==3.28.*" ninja nanobind
 
       - name: Configure and build at the minimum version
         run: |
@@ -92,3 +111,25 @@ jobs:
             -DAHOCORASICK_BUILD_PYTHON_MODULE=ON \
             -DPython_EXECUTABLE="$(which python)"
           cmake --build build-min
+
+  rejects-old-compiler:
+    # The build fails on a compiler that cannot scan for modules. That is a
+    # supported outcome rather than a crash, so the diagnostic is worth testing:
+    # it has to name the compiler it actually found, because the usual cause is
+    # picking up a different one than expected.
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-13
+      CC: gcc-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure with a compiler that cannot scan modules
+        run: |
+          if cmake -S . -B build-old -G Ninja 2>err.txt; then
+            echo "expected configuration to fail on g++-13"
+            exit 1
+          fi
+          cat err.txt
+          grep -q "C++20 module" err.txt
+          grep -q "g++-13" err.txt

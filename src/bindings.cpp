@@ -1,8 +1,8 @@
 // The Python binding layer, and nothing else.
 //
 // Every Python concern lives here: overload resolution, converting iterables,
-// pickling, docstrings. `aho_corasick.hpp` stays a plain C++ library that could
-// be linked into a program that has never heard of Python.
+// pickling, docstrings. The `aho_corasick` module stays a plain C++ library that
+// could be linked into a program that has never heard of Python.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/pair.h>
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-#include "aho_corasick.hpp"
+import aho_corasick;
 
 namespace nb = nanobind;
 using namespace nb::literals;
