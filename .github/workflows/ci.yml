@@ -30,7 +30,7 @@ jobs:
         run: python -m pip install ".[test]" --verbose
 
       - name: Test
-        # Run from the repo root so pytest finds tests/, while `bloomdemo` still
+        # Run from the repo root so pytest finds tests/, while `ahocorasick_demo` still
         # resolves to the installed wheel — that is exactly what the src/ layout
         # buys us, and tests/test_package_layout.py asserts it.
         # Benchmarks are skipped by addopts already; repeated here so the intent
@@ -41,9 +41,9 @@ jobs:
         run: |
           python - <<'EOF'
           import pathlib
-          from bloomdemo import _core
+          from ahocorasick_demo import _core
           stub = pathlib.Path(_core.__file__).parent / "_core.pyi"
           assert stub.is_file(), "nanobind_add_stub did not install _core.pyi"
-          assert "class BloomFilter" in stub.read_text()
+          assert "class PatternMatcher" in stub.read_text()
           print(stub.read_text())
           EOF
