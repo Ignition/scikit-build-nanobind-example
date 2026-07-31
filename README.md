@@ -132,12 +132,19 @@ the build type's own optimisation level. Neither target hardcodes an
 optimisation flag: `-O3` written into `target_compile_options` is redundant in
 Release and silently ruins a Debug build.
 
-The library also sets `CXX_VISIBILITY_PRESET hidden`, matching what
-`nanobind_add_module` does for the module. Without it, every `ac::PatternMatcher`
-symbol is exported from the `.so` — which bloats the dynamic symbol table and
-risks interposition if another extension in the same process exports the same
-names at a different version. Turning it on here dropped the exported symbol
-count from 47 to 38.
+Hidden visibility is a project-wide default rather than a per-target property, so
+a target added later cannot silently start from `default`. Without it every
+`ac::PatternMatcher` symbol is exported from the `.so`, which bloats the dynamic
+symbol table and risks interposition if another extension in the same process
+exports the same names at a different version.
+
+`--exclude-libs,ALL` on the link line finishes the job. Visibility settings only
+reach code this project compiles; a third-party static library arrives already
+compiled, most likely with default visibility, and re-exports its whole symbol
+table from whichever shared object absorbs it. There is no such dependency yet,
+but it also strips the weak libstdc++ template instantiations that survive
+otherwise: the built extension module exports **1** symbol, `PyInit__core`, down
+from 31.
 
 ## Decisions, and why
 
