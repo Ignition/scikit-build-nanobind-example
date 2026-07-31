@@ -37,6 +37,11 @@ jobs:
         # survives an edit to pyproject.toml.
         run: python -m pytest -v --benchmark-skip
 
+      - name: Check compile_commands.json was generated
+        # Tooling (clangd, clang-tidy) depends on it, so it is worth noticing if
+        # it silently stops appearing.
+        run: test -f build/*/compile_commands.json
+
       - name: Check the generated stub shipped
         run: |
           python - <<'EOF'
@@ -47,3 +52,43 @@ jobs:
           assert "class PatternMatcher" in stub.read_text()
           print(stub.read_text())
           EOF
+
+  standalone-library:
+    # Proves the claim the layout is built on: the algorithm compiles with no
+    # Python, no nanobind, and no scikit-build-core anywhere in sight. If someone
+    # leaks a nanobind include into aho_corasick.cpp, this job is what catches it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build the library alone
+        run: |
+          cmake -S . -B build-standalone -G Ninja
+          cmake --build build-standalone
+
+      - name: Assert the Python module was not built
+        run: |
+          test -f build-standalone/libaho_corasick.a
+          ! ls build-standalone/_core*.so 2>/dev/null
+
+  minimum-cmake:
+    # cmake_minimum_required declares 3.18; a floor nobody configures against is
+    # a guess. This job makes it a tested claim.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the declared minimum CMake and nanobind
+        run: python -m pip install "cmake==3.18.*" ninja nanobind
+
+      - name: Configure and build at the minimum version
+        run: |
+          cmake --version
+          cmake -S . -B build-min -G Ninja \
+            -DAHOCORASICK_BUILD_PYTHON_MODULE=ON \
+            -DPython_EXECUTABLE="$(which python)"
+          cmake --build build-min

@@ -41,13 +41,34 @@ src/aho_corasick.cpp   builds the `aho_corasick` static library
 src/bindings.cpp       the only file containing NB_MODULE
 ```
 
-`aho_corasick` compiles, links, and could be unit-tested without Python existing.
+`aho_corasick` compiles, links, and can be unit-tested without Python existing —
+and that is enforced, not merely intended:
+
+```bash
+cmake -S . -B build-standalone -G Ninja   # no Python, no nanobind, no pip
+cmake --build build-standalone            # -> libaho_corasick.a
+```
+
+`find_package(Python)` and the nanobind probe live behind
+`AHOCORASICK_BUILD_PYTHON_MODULE`, which defaults ON under scikit-build-core and
+OFF for a bare `cmake -B build`. A CI job builds this way on every push, so a
+stray nanobind include in the algorithm breaks the build rather than the claim.
+
+
 That buys three things: the algorithm can be reused in a non-Python program, the
-binding layer stays thin enough to read in one sitting, and the two get *different
-compiler flags* — the library is built `-O3` because it holds the hot loop, while
-the binding shim keeps nanobind's size-optimised default because no measurable
-time is spent there. Wiring `-O3` across a single merged target would bloat the
-binary for no gain.
+binding layer stays thin enough to read in one sitting, and the two get
+*different compiler treatment* — nanobind's size-optimised `-Os` applies only to
+the binding shim, where no measurable time is spent, while the algorithm keeps
+the build type's own optimisation level. Neither target hardcodes an
+optimisation flag: `-O3` written into `target_compile_options` is redundant in
+Release and silently ruins a Debug build.
+
+The library also sets `CXX_VISIBILITY_PRESET hidden`, matching what
+`nanobind_add_module` does for the module. Without it, every `ac::PatternMatcher`
+symbol is exported from the `.so` — which bloats the dynamic symbol table and
+risks interposition if another extension in the same process exports the same
+names at a different version. Turning it on here dropped the exported symbol
+count from 47 to 38.
 
 ## Decisions, and why
 
@@ -70,6 +91,9 @@ The choices worth knowing about before you copy this:
 | Benchmarks | Record-only, skipped in CI | Numbers on demand; CI stays a pure correctness gate |
 | Version | `pyproject.toml` → CMake → C++ | One source of truth via `SKBUILD_PROJECT_VERSION` |
 | Python range | `>=3.9`, CI on 3.9 / 3.12 / 3.13 | Claim only what is tested |
+| CMake floor | 3.18, pinned in a CI job | Same rule: a floor nobody configures against is a guess |
+| Optimisation flags | Left to `CMAKE_BUILD_TYPE` | Hardcoded `-O3` is redundant in Release and breaks Debug |
+| Symbol visibility | Hidden on the library too | Otherwise the static library's symbols leak out of the module |
 
 ## Quick start
 
