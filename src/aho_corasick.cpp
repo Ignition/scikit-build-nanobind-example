@@ -19,8 +19,8 @@ std::size_t count_code_points(std::string_view text) noexcept {
 
 std::int32_t PatternMatcher::step(std::int32_t state, std::uint8_t byte) const noexcept {
     // One child() lookup per iteration. Testing the transition in the loop
-    // condition and then repeating it would double the binary searches on the
-    // hot path for every byte that does match.
+    // condition and then repeating it to get the result would do the work twice
+    // for every byte that does match, which is most of them.
     for (;;) {
         const std::int32_t next = child(state, byte);
         if (next >= 0) {

@@ -68,10 +68,11 @@ private:
     using Child = std::pair<std::uint8_t, std::int32_t>;  // (byte, next state)
 
     struct Node {
-        // Sorted by byte, so the scan below can stop early. Kept as a small vector
-        // rather than a dense 256-entry table: dense would be one load instead of
-        // a loop, but costs 1 KB per state — hundreds of megabytes at realistic
-        // pattern counts. Measured, it also gains nothing here (see README).
+        // Sorted by byte, so the lookup below can stop early. Kept as a small
+        // vector rather than a dense table indexed by byte: dense would be one
+        // load instead of a loop, but costs a kilobyte per state, which dominates
+        // memory once there are many patterns. It was also no faster in practice,
+        // because the lookup it replaces is already short.
         std::vector<Child> children;
         std::int32_t fail = 0;
         std::int32_t output_link = -1;       // nearest proper suffix that is terminal
@@ -88,17 +89,18 @@ private:
     }
 
     // The innermost operation of every scan, so it lives in the header where the
-    // compiler can inline it. Two deliberate choices here, both measured:
+    // compiler can inline it. Two deliberate choices, both against the more
+    // idiomatic spelling:
     //
-    //   - A linear scan, not std::lower_bound. Child lists are short, and a binary
-    //     search branches on data the predictor cannot learn: the linear version
-    //     runs 20% fewer instructions with 40% fewer mispredictions.
-    //   - Written out, not std::ranges::find_if, which cost 6%. find_if locates
-    //     the first entry >= byte and then re-tests equality; this returns the
-    //     instant it matches.
+    //   - A linear scan, not a binary search. Child lists are short, and a binary
+    //     search branches on data the predictor cannot learn, so it mispredicts
+    //     roughly every other lookup.
+    //   - Written out, not std::ranges::find_if. find_if must locate the first
+    //     entry not below the byte and then re-test it for equality, where this
+    //     returns the instant it matches.
     //
     // Everything else in this file uses the ranges algorithms. This is the only
-    // loop hot enough to be worth hand-writing — see README.
+    // loop hot enough to be worth hand-writing.
     [[nodiscard]] std::int32_t child(std::int32_t state, std::uint8_t byte) const noexcept {
         for (const auto& [key, next] : node(state).children) {
             if (key == byte) {

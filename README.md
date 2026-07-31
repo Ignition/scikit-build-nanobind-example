@@ -12,7 +12,7 @@ It is also an honest example of *when* a C++ extension is worth the trouble. The
 automaton is expensive to build and cheap to reuse, and scanning costs the same
 whether you registered ten patterns or ten thousand — so the object living behind
 the boundary earns its keep, rather than being a Python data structure in a
-costume. At 10,000 patterns it is **115x faster** than the obvious Python
+costume. At 10,000 patterns it is **117x faster** than the obvious Python
 approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 
 ## What it demonstrates
@@ -85,7 +85,7 @@ The choices worth knowing about before you copy this:
 | Trie children | Sorted vector, linear scan | Measured: 20% fewer instructions and 40% fewer branch mispredicts than binary search |
 | Tests | pytest + Hypothesis against a brute-force oracle | The oracle is obviously correct; the automaton is not |
 | Stubs | `nanobind_add_stub` at build time | Cannot drift from the bindings; the fiddly bit worth recording |
-| C++ standard | C++20 | `std::span`, designated initialisers, `<bit>` |
+| C++ standard | C++20 | `std::span`, the ranges algorithms and their projections |
 | Free-threading | On | No mutable module state, and a matcher is immutable once built |
 | Benchmarks | Record-only, skipped in CI | Numbers on demand; CI stays a pure correctness gate |
 | Version | `pyproject.toml` → CMake → C++ | One source of truth via `SKBUILD_PROJECT_VERSION` |
@@ -158,7 +158,7 @@ A `PatternMatcher` is immutable once constructed, so sharing one across threads
 needs no lock — unusually, this is safe rather than merely permitted.
 
 **Why the automaton is not perfectly flat.** Scan time does creep up with pattern
-count (1.2 ms → 15.2 ms across three orders of magnitude) because more states
+count (1.1 ms → 15.0 ms across three orders of magnitude) because more states
 means worse cache locality, not more work per byte. The complexity claim is about
 algorithmic cost; memory hierarchy still charges rent.
 
@@ -181,22 +181,22 @@ single compiled alternation of all patterns.
 
 | patterns | automaton | `str.count` loop | speedup |
 | --- | --- | --- | --- |
-| 10 | 1.22 ms | 1.83 ms | 1.5x |
-| 100 | 1.34 ms | 17.4 ms | 13x |
-| 1,000 | 2.79 ms | 177 ms | 63x |
-| 10,000 | 15.2 ms | 1,753 ms | **115x** |
+| 10 | 1.09 ms | 1.81 ms | 1.7x |
+| 100 | 1.20 ms | 17.2 ms | 14x |
+| 1,000 | 2.59 ms | 174 ms | 67x |
+| 10,000 | 15.0 ms | 1,757 ms | **117x** |
 
 **All three approaches at 10,000 patterns:**
 
 | approach | build | scan |
 | --- | --- | --- |
-| `PatternMatcher` | 4.29 ms | **15.1 ms** |
-| `re` alternation | 4.53 ms | 6,347 ms |
-| `str.count` loop | — | 1,767 ms |
+| `PatternMatcher` | 4.33 ms | **15.2 ms** |
+| `re` alternation | 4.59 ms | 6,241 ms |
+| `str.count` loop | — | 1,754 ms |
 
 Two things worth reading off these numbers honestly:
 
-- **At ten patterns the win is 1.5x**, which is not worth an extension. Python's
+- **At ten patterns the win is under 2x**, which is not worth an extension. Python's
   `str.count` is C with a good substring search. If your pattern count is small,
   do not reach for C++ — the case only becomes compelling in the hundreds.
 - **Building the automaton is as cheap as compiling the equivalent regex**, so
