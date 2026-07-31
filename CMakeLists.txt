@@ -63,35 +63,90 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # and only fail once someone tries MSVC.
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Hidden by default, exported deliberately. Set as directory-wide defaults rather
+# than per-target properties so a target added later cannot silently start from
+# `default` visibility; both seed every target created after this point.
+#
+# VISIBILITY_INLINES_HIDDEN is not an optional extra. Without it inline member
+# functions stay exported and most of the dynamic symbol table survives anyway.
+# Both are inert on MSVC, which is opt-in-export to begin with.
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 # --- The algorithm, with no idea Python exists -------------------------------
 # A separate target on purpose. It never sees a nanobind header, so it can be
 # unit-tested with a C++ framework, linked into a non-Python program, or handed
 # to someone who does not care about bindings at all. Keeping this boundary
 # honest is easier when the build enforces it.
-add_library(aho_corasick STATIC)
+#
+# The type is BUILD_SHARED_LIBS' to choose, which is the convention consumers
+# already expect, except under scikit-build-core. A shared core inside a wheel
+# would have to be installed next to the extension module and found again at
+# import time through an $ORIGIN RPATH, and buys nothing: the module is the only
+# consumer there. So the wheel is always statically linked, and the shared build
+# exists for the "linked into a non-Python program" case above.
+if(DEFINED SKBUILD)
+    set(_ahocorasick_library_type STATIC)
+else()
+    set(_ahocorasick_library_type "")  # empty: defer to BUILD_SHARED_LIBS
+endif()
+add_library(aho_corasick ${_ahocorasick_library_type})
 add_library(ahocorasick::core ALIAS aho_corasick)
 
 # The module interface unit goes in a CXX_MODULES file set rather than being
 # listed as an ordinary source. That is what lets CMake scan it, work out the
 # import graph, and order the build so importers compile after it.
+# Only the interface unit belongs in the file set. The implementation unit is an
+# ordinary source: CMake still scans it and orders it after the interface, but it
+# contributes nothing an importer can see.
 target_sources(aho_corasick
+               PRIVATE src/aho_corasick.cpp
                PUBLIC FILE_SET CXX_MODULES
                       BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
                       FILES src/aho_corasick.cppm)
 
-# No include directory: consumers reach this library by importing it, not by
-# finding a header.
+# No include directory for consumers: they reach this library by importing it,
+# not by finding a header.
 target_compile_features(aho_corasick PUBLIC cxx_std_20)
 
+# `export` on a module declaration and `visibility("default")` on a symbol are
+# unrelated despite the shared word. The first decides which names an importer is
+# allowed to spell; the second decides what survives into the dynamic symbol
+# table. Hidden visibility plus a shared library therefore compiles and links the
+# library cleanly and then fails in the *consumer*, with undefined references to
+# names the module plainly exports. AHOCORASICK_EXPORT, applied in the .cppm, is
+# what reconciles the two.
+#
+# The generated header is included from the global module fragment, because
+# macros do not cross a module boundary: defining this on the command line would
+# leave the .cppm unable to see it.
+include(GenerateExportHeader)
+generate_export_header(aho_corasick
+    BASE_NAME AHOCORASICK
+    EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/generated/ahocorasick_export.h)
+
+# PRIVATE: only the module interface unit includes this. Consumers import.
+target_include_directories(aho_corasick
+                           PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
+# In a static library the macro must expand to nothing; the generated header
+# keys that off AHOCORASICK_STATIC_DEFINE. Reading the target's own TYPE rather
+# than re-testing BUILD_SHARED_LIBS keeps this correct however the type was
+# decided above.
+get_target_property(_ahocorasick_type aho_corasick TYPE)
+if(_ahocorasick_type STREQUAL "STATIC_LIBRARY")
+    target_compile_definitions(aho_corasick PRIVATE AHOCORASICK_STATIC_DEFINE)
+else()
+    # An unversioned .so is a packaging problem deferred, not avoided.
+    set_target_properties(aho_corasick PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR})
+endif()
+
 set_target_properties(aho_corasick PROPERTIES
-    # Required: this static library is linked into a shared module.
-    POSITION_INDEPENDENT_CODE ON
-    # Match what nanobind_add_module does for the module itself. Without this the
-    # library's symbols are exported from the .so, which bloats the dynamic
-    # symbol table and risks interposition if another extension in the same
-    # process exports the same names at a different version.
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN ON)
+    # Required when static: this library is linked into a shared module. Implied
+    # when shared, and harmless to state either way.
+    POSITION_INDEPENDENT_CODE ON)
 
 # Warnings only — optimisation belongs to CMAKE_BUILD_TYPE. Hardcoding -O3 here
 # would be redundant in Release and would silently defeat a Debug build.
@@ -108,6 +163,16 @@ target_compile_options(aho_corasick PRIVATE
 #
 # Note it attaches to the algorithm target, not the module — another reason to
 # keep the two separate.
+#
+# The visibility settings above cannot reach such a library: it was compiled
+# elsewhere, most likely with default visibility, so linking its archive in
+# re-exports its entire symbol table from whichever shared object absorbs it.
+# That is the real interposition risk for a Python extension — two wheels in one
+# process each exporting a different version of the same third-party symbols.
+# --exclude-libs is the link-side backstop, and belongs on both targets because
+# which one absorbs the archive depends on how the algorithm was built.
+target_link_options(aho_corasick PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:LINKER:--exclude-libs,ALL>)
 # -----------------------------------------------------------------------------
 
 if(NOT AHOCORASICK_BUILD_PYTHON_MODULE)
@@ -157,6 +222,11 @@ target_compile_definitions(_core PRIVATE
 target_compile_options(_core PRIVATE
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+
+# See the seam comment above. This is the target that absorbs the algorithm's
+# archive in the static build, which is the configuration wheels are built in.
+target_link_options(_core PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:LINKER:--exclude-libs,ALL>)
 
 # Generated at build time by importing the freshly built module, so it can never
 # drift from the bindings. Note: this imports the .so on the build machine, which
