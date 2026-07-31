@@ -31,6 +31,7 @@ approach; at ten patterns the margin nearly vanishes. Both numbers are below.
 | Pickle support for a C++ type | `__getstate__` / `__setstate__` |
 | Type stubs generated at build time | `nanobind_add_stub` in `CMakeLists.txt` |
 | Property tests against a brute-force oracle | `tests/test_matcher.py` |
+| **C++ unit tests, fetched framework and all** | `tests/test_matcher.cpp` + `FetchContent` in `CMakeLists.txt` |
 
 ## The layout that matters
 
@@ -49,11 +50,33 @@ function, and the traversal are genuinely private, which a header cannot
 express. `bindings.cpp` reaches it with `import aho_corasick;` while still
 including nanobind's headers in the same file, which mixes cleanly.
 
-`aho_corasick` compiles, links, and can be unit-tested without Python existing —
-and that is enforced by the build, not merely intended:
+`aho_corasick` compiles, links, and is unit-tested without Python existing — and
+that is enforced by the build, not merely intended:
 
 ```bash
-cmake -S . -B build-standalone -G Ninja   # no Python, no nanobind, no pip
+cmake -S . -B build-cpp -G Ninja   # no Python, no nanobind, no pip
+cmake --build build-cpp
+ctest --test-dir build-cpp         # 11 cases, no interpreter involved
+```
+
+The tests are C++ because that is where the units are. `tests/test_matcher.cpp`
+owns the fixed-case behaviour and, more usefully, the four things the binding
+layer cannot reach at all: byte offsets over non-ASCII text, character offsets
+over invalid UTF-8, `Pattern::chars`, and the constructor's exception as a C++
+type rather than a translated `ValueError`. `tests/test_matcher.py` keeps what
+genuinely exercises the whole stack — the `str`/`bytes` overloads, pickle,
+packaging, and the Hypothesis property tests against a brute-force oracle, which
+have no C++ equivalent worth having.
+
+That suite is also the only thing that links a consumer against the shared
+library. Drop an `AHOCORASICK_EXPORT` and `BUILD_SHARED_LIBS=ON` now fails to
+link here, rather than in somebody else's project.
+
+Building the tests needs the network the first time, to fetch Catch2. To build
+the library with genuinely nothing installed, turn them off:
+
+```bash
+cmake -S . -B build-standalone -G Ninja -DAHOCORASICK_BUILD_TESTS=OFF
 cmake --build build-standalone            # -> libaho_corasick.a
 ```
 
@@ -184,7 +207,8 @@ The choices worth knowing about before you copy this:
 | Keys | `str` + `bytes` overloads | `str` is what people reach for; `bytes` is what is exact |
 | Offsets | Code points for `str`, bytes for `bytes` | Byte offsets into a `str` disagree with Python's own indexing |
 | Trie children | Sorted vector, linear scan | Measured: 20% fewer instructions and 40% fewer branch mispredicts than binary search |
-| Tests | pytest + Hypothesis against a brute-force oracle | The oracle is obviously correct; the automaton is not |
+| Tests | Catch2 for units, pytest + Hypothesis for integration | Shift left: unit-test the C++ in C++, and let Python test the whole stack |
+| Test framework | Catch2 v3, pinned tag, via `FetchContent` | Version lives in the build; the one dependency this template otherwise never demonstrates |
 | Stubs | `nanobind_add_stub` at build time | Cannot drift from the bindings; the fiddly bit worth recording |
 | Algorithm form | A C++20 module | The privacy boundary is enforced by the language, not by convention |
 | C++ standard | C++20 | `std::span`, the ranges algorithms and their projections |

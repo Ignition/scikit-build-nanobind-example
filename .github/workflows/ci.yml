@@ -69,6 +69,12 @@ jobs:
     # Proves the claim the layout is built on: the algorithm compiles with no
     # Python, no nanobind, and no scikit-build-core anywhere in sight. If someone
     # leaks a nanobind include into the module, this job is what catches it.
+    #
+    # Tests are turned off explicitly. They default ON for a bare `cmake`, and
+    # fetching Catch2 would need the network - which would quietly weaken this
+    # job from "builds with nothing installed" to "builds with nothing installed
+    # except a test framework downloaded mid-configure". Running the tests is the
+    # cpp-tests job's business; this one asserts the dependency-free claim.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -78,13 +84,39 @@ jobs:
 
       - name: Configure and build the library alone
         run: |
-          cmake -S . -B build-standalone -G Ninja
+          cmake -S . -B build-standalone -G Ninja -DAHOCORASICK_BUILD_TESTS=OFF
           cmake --build build-standalone
 
       - name: Assert the Python module was not built
         run: |
           test -f build-standalone/libaho_corasick.a
           ! ls build-standalone/_core*.so 2>/dev/null
+
+  cpp-tests:
+    # The algorithm's own test suite, run without Python present. Both link modes
+    # matter and for different reasons: the static build is what wheels use, and
+    # the shared build is the only configuration that actually links a consumer
+    # against the library - which is what turns a missing AHOCORASICK_EXPORT into
+    # a build failure here rather than a surprise in somebody else's project.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install a module-capable compiler
+        run: sudo apt-get install -y g++-14
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-cpp -G Ninja \
+            -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+          cmake --build build-cpp
+
+      - name: Test
+        run: ctest --test-dir build-cpp --output-on-failure
 
   minimum-cmake:
     # cmake_minimum_required declares 3.28, the release where FILE_SET

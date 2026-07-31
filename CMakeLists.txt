@@ -255,6 +255,58 @@ target_link_options(aho_corasick PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:LINKER:--exclude-libs,ALL>)
 # -----------------------------------------------------------------------------
 
+# --- The C++ tests -----------------------------------------------------------
+# Placed above the Python section on purpose. Both sections are optional, and the
+# early `return()` below only works for whichever comes last, so the section that
+# can be guarded by a plain if() goes first and the return() stays the final word
+# in the file.
+#
+# Defaults OFF under scikit-build-core - a wheel build has no business compiling
+# a test framework - and ON otherwise, mirroring AHOCORASICK_BUILD_PYTHON_MODULE
+# above. Note the consequence: with tests ON the configure step needs network the
+# first time, which is why CI's standalone-library job passes OFF explicitly to
+# keep proving that the algorithm builds with nothing installed.
+if(DEFINED SKBUILD)
+    set(_ahocorasick_tests_default OFF)
+else()
+    set(_ahocorasick_tests_default ON)
+endif()
+option(AHOCORASICK_BUILD_TESTS
+       "Build the C++ unit tests" ${_ahocorasick_tests_default})
+
+if(AHOCORASICK_BUILD_TESTS)
+    # The project's first real third-party C++ dependency, and the one piece of
+    # dependency acquisition this template otherwise never demonstrates. Pinned to
+    # a tag rather than a branch: a test framework that changes under you turns a
+    # green build red for reasons that have nothing to do with this code.
+    include(FetchContent)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.7.1
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(Catch2)
+
+    enable_testing()
+
+    # Reaches the algorithm the same way bindings.cpp does - `import
+    # aho_corasick;` - so this target is a genuine second consumer of the module,
+    # not a re-compilation of its sources. In the shared configuration it is also
+    # the only thing that links the library, which is what makes a missing
+    # AHOCORASICK_EXPORT a build failure rather than a downstream surprise.
+    add_executable(ahocorasick_tests tests/test_matcher.cpp)
+    target_link_libraries(ahocorasick_tests
+                          PRIVATE ahocorasick::core
+                                  Catch2::Catch2WithMain
+                                  ahocorasick_warnings)
+
+    # catch_discover_tests registers each TEST_CASE with CTest individually, so a
+    # failure names the case rather than just the executable.
+    list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+    include(Catch)
+    catch_discover_tests(ahocorasick_tests)
+endif()
+
 if(NOT AHOCORASICK_BUILD_PYTHON_MODULE)
     return()
 endif()

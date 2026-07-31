@@ -190,7 +190,25 @@ genuinely integration-level.
   member, confirm the shared build fails to link and the static build still
   passes. Revert.
 
-**Status**: Not Started
+**Status**: Complete
+
+Amendment: acquisition is plain `FetchContent` pinned to `v3.7.1`, without
+`FIND_PACKAGE_ARGS` — so the fetch is unconditional rather than falling back to a
+system Catch2.
+
+Correction made during the move: `__repr__` and `__len__` are defined in
+`bindings.cpp` and have no C++ counterpart, so the first pass at deleting the
+core-behaviour block dropped their coverage rather than moving it. Restored as
+`test_dunder_len_and_repr_are_wired_to_the_automaton`.
+
+Verified: 11 C++ tests pass in both link modes. Removing `AHOCORASICK_EXPORT`
+from `count` fails the **shared** build with `undefined reference to
+ac::PatternMatcher@aho_corasick::count(...)` while the static build stays green —
+the exact failure the README describes and nothing previously caught; reverted.
+Standalone configure with `-DAHOCORASICK_BUILD_TESTS=OFF` creates no `_deps`
+directory, so the no-network claim holds. Wheel builds do not compile Catch2.
+Python suite 17 passed / 13 skipped, down from 23 by the six moved tests and the
+one restored.
 
 ---
 

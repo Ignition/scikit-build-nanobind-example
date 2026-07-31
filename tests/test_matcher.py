@@ -24,65 +24,32 @@ def reference_find_all(patterns, text):
 
 
 # --- Core behaviour ----------------------------------------------------------
+#
+# The fixed-case core behaviour - overlaps, nesting, counting, state counts, the
+# empty pattern list, repeated patterns - lives in tests/test_matcher.cpp. It
+# needs no interpreter to state, and stating it in C++ means a failure points at
+# the algorithm rather than arriving through the binding layer.
+#
+# What stays here is what genuinely exercises the whole stack: the binding
+# layer's own behaviour, and the property tests against a brute-force oracle.
 
 
 def test_rejects_empty_patterns():
     # An empty pattern matches everywhere, which is never what a caller means.
+    # The C++ suite pins the exception *type*; this pins nanobind's translation
+    # of it into ValueError, which is the part Python callers depend on.
     with pytest.raises(ValueError, match="empty"):
         PatternMatcher(["ok", ""])
 
 
-def test_no_patterns_matches_nothing():
-    matcher = PatternMatcher([])
-
-    assert len(matcher) == 0
-    assert not matcher.matches("anything at all")
-    assert matcher.find_all("anything at all") == []
-
-
-def test_finds_overlapping_and_nested_matches():
-    # The textbook case: "he" is nested inside "she", and "hers" overlaps both.
-    # A loop of str.find would report only some of these.
-    matcher = PatternMatcher(["he", "she", "hers"])
-
-    found = sorted(matcher.find_all("ushers"))
-
-    assert found == [(1, 1), (2, 0), (2, 2)]
-
-
-def test_counts_overlapping_occurrences():
-    matcher = PatternMatcher(["aa"])
-
-    # "aaa" contains "aa" twice when overlaps count; str.count would say once.
-    assert matcher.count("aaa") == 2
-
-
-def test_matches_stops_at_the_first_hit():
-    matcher = PatternMatcher(["needle"])
-
-    assert matcher.matches("haystack needle haystack")
-    assert not matcher.matches("haystack haystack")
-
-
-def test_repeated_patterns_are_reported_separately():
-    matcher = PatternMatcher(["ab", "ab"])
-
-    assert len(matcher) == 2
-    assert sorted(matcher.find_all("ab")) == [(0, 0), (0, 1)]
-
-
-def test_len_and_state_count():
+def test_dunder_len_and_repr_are_wired_to_the_automaton():
+    # These two have no C++ counterpart to move to: __len__ and __repr__ are
+    # defined in bindings.cpp, so the mapping from num_patterns/num_states onto
+    # Python's protocols is only observable from here.
     matcher = PatternMatcher(["he", "she", "hers"])
 
     assert len(matcher) == 3
-    # root + "he" (2) + "she" (3) + "hers" reusing the "he" prefix and adding
-    # "r","s" (2) = 8. Shared prefixes are merged, which is the point of a trie.
     assert matcher.num_states == 8
-
-
-def test_repr_shows_the_shape_of_the_automaton():
-    matcher = PatternMatcher(["he", "she", "hers"])
-
     assert repr(matcher) == "PatternMatcher(patterns=3, states=8)"
 
 
